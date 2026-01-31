@@ -1,7 +1,3 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
-
 /* 
   AI Interview Platform Design System
   Professional, Clean, Trust-inducing
@@ -9,7 +5,12 @@
   Academic/Educational Focus
 */
 
+/* @import MUST come BEFORE @tailwind directives */
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
 
 @layer base {
   :root {
