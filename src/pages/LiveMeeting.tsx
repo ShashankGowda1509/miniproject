@@ -38,6 +38,7 @@ export default function LiveMeeting() {
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [isConnecting, setIsConnecting] = useState(false);
   const [isPeerReady, setIsPeerReady] = useState(false);
+  const [pendingCall, setPendingCall] = useState<MediaConnection | null>(null);
   
   const videoRef = useRef<HTMLVideoElement>(null);
   const peerRef = useRef<Peer | null>(null);
@@ -112,6 +113,8 @@ export default function LiveMeeting() {
 
     peer.on('call', (call) => {
       console.log('📞 Receiving call from:', call.peer);
+      
+      // If we have local stream, answer immediately
       if (localStream) {
         console.log('Answering call with local stream...');
         call.answer(localStream);
@@ -147,12 +150,13 @@ export default function LiveMeeting() {
 
         connectionsRef.current.set(call.peer, call);
       } else {
-        console.error('❌ No local stream available to answer call');
-        call.close();
+        // Store the call to answer when stream is ready
+        console.log('⏳ No local stream yet, storing incoming call...');
+        setPendingCall(call);
+        
         toast({
-          title: 'Cannot Connect',
-          description: 'Local stream not ready. Please try again.',
-          variant: 'destructive'
+          title: 'Incoming Call',
+          description: 'Click "Join Meeting" to answer the call',
         });
       }
     });
@@ -216,26 +220,64 @@ export default function LiveMeeting() {
     }
   }, [localStream]);
 
+  // Effect to answer pending calls when localStream becomes available
+  useEffect(() => {
+    if (localStream && pendingCall) {
+      console.log('✅ Local stream ready, answering pending call from:', pendingCall.peer);
+      
+      pendingCall.answer(localStream);
+      
+      pendingCall.on('stream', (remoteStream) => {
+        console.log('✅ Received remote stream from pending call:', pendingCall.peer);
+        addRemoteParticipant(pendingCall.peer, remoteStream);
+        
+        toast({
+          title: 'Connected',
+          description: `Connected to ${pendingCall.peer.substring(0, 8)}`,
+        });
+      });
+
+      pendingCall.on('close', () => {
+        console.log('Call closed with:', pendingCall.peer);
+        removeRemoteParticipant(pendingCall.peer);
+      });
+
+      pendingCall.on('error', (err) => {
+        console.error('Pending call error:', err);
+        toast({
+          title: 'Connection Error',
+          description: 'Failed to connect with peer',
+          variant: 'destructive'
+        });
+      });
+
+      connectionsRef.current.set(pendingCall.peer, pendingCall);
+      setPendingCall(null);
+    }
+  }, [localStream, pendingCall]);
+
   // Separate effect to handle call initiation when localStream is ready
   useEffect(() => {
     // Only attempt to connect if there's a roomId and it's different from our own
     if (localStream && roomId && roomId.trim() && roomId !== myPeerId && isInMeeting && isPeerReady) {
-      console.log('Conditions met for calling peer:', { 
+      console.log('🔄 Conditions met for calling peer:', { 
         hasLocalStream: !!localStream, 
         roomId, 
         myPeerId,
         isInMeeting,
-        isPeerReady 
+        isPeerReady,
+        videoTracks: localStream.getVideoTracks().length,
+        audioTracks: localStream.getAudioTracks().length
       });
       const timer = setTimeout(() => {
-        console.log('Attempting to call peer:', roomId);
+        console.log('📞 Initiating call to peer:', roomId);
         callPeer(roomId);
-      }, 1000);
+      }, 1500); // Increased delay to ensure both peers are fully ready
       return () => clearTimeout(timer);
     } else if (isInMeeting && roomId && roomId.trim() && localStream && isPeerReady) {
       // Check why we're not connecting
       if (roomId === myPeerId) {
-        console.log('Not connecting: Cannot call yourself');
+        console.log('⚠️ Not connecting: Cannot call yourself');
         toast({
           title: 'Invalid Room ID',
           description: 'You cannot use your own Peer ID as the Room ID.',
@@ -243,7 +285,7 @@ export default function LiveMeeting() {
         });
       }
     } else if (isInMeeting && roomId && roomId.trim() && !localStream) {
-      console.log('Waiting for local stream before connecting to peer...');
+      console.log('⏳ Waiting for local stream before connecting to peer...');
     }
   }, [localStream, roomId, myPeerId, isInMeeting, isPeerReady]);
 
@@ -373,7 +415,7 @@ export default function LiveMeeting() {
     }
 
     if (remotePeerId === myPeerId) {
-      console.error('Cannot call yourself');
+      console.error('❌ Cannot call yourself');
       toast({
         title: 'Invalid Room ID',
         description: 'You cannot call yourself. Please enter a different Room ID.',
@@ -382,47 +424,80 @@ export default function LiveMeeting() {
       return;
     }
 
+    // Check if already connected
+    if (connectionsRef.current.has(remotePeerId)) {
+      console.log('⚠️ Already connected to:', remotePeerId);
+      return;
+    }
+
     console.log('📞 Calling peer:', remotePeerId);
+    console.log('📤 Sending stream with tracks:', {
+      video: localStream.getVideoTracks().length,
+      audio: localStream.getAudioTracks().length
+    });
+    
     setIsConnecting(true);
     
     try {
       const call = peerRef.current.call(remotePeerId, localStream);
       
+      if (!call) {
+        console.error('❌ Failed to create call object');
+        setIsConnecting(false);
+        return;
+      }
+
+      // Add timeout for connection
+      const connectionTimeout = setTimeout(() => {
+        if (isConnecting) {
+          console.error('❌ Connection timeout');
+          setIsConnecting(false);
+          toast({
+            title: 'Connection Timeout',
+            description: 'Could not connect to peer. They may not be online.',
+            variant: 'destructive'
+          });
+          call.close();
+        }
+      }, 15000); // 15 second timeout
+      
       call.on('stream', (remoteStream) => {
+        clearTimeout(connectionTimeout);
         console.log('✅ Received stream from:', remotePeerId);
-        console.log('Remote stream ready - Video tracks:', remoteStream.getVideoTracks().length, 'Audio tracks:', remoteStream.getAudioTracks().length);
+        console.log('📥 Remote stream tracks:', {
+          video: remoteStream.getVideoTracks().length,
+          audio: remoteStream.getAudioTracks().length
+        });
         addRemoteParticipant(remotePeerId, remoteStream);
         setIsConnecting(false);
         
         toast({
-          title: 'Connected',
-          description: 'Successfully connected to peer',
+          title: 'Connected!',
+          description: 'Successfully connected to peer. You can now talk.',
         });
       });
 
       call.on('close', () => {
-        console.log('Call closed with:', remotePeerId);
+        clearTimeout(connectionTimeout);
+        console.log('❌ Call closed with:', remotePeerId);
         removeRemoteParticipant(remotePeerId);
       });
 
       call.on('error', (err) => {
+        clearTimeout(connectionTimeout);
         console.error('❌ Call error:', err);
         setIsConnecting(false);
         
-        const errorMsg = err instanceof Error 
-          ? 'Could not connect to peer. Check the Room ID and try again.'
-          : 'Could not connect to peer. Check the Room ID and try again.';
-        
         toast({
           title: 'Call Failed',
-          description: errorMsg,
+          description: 'Could not connect. Make sure your friend has joined the meeting.',
           variant: 'destructive'
         });
       });
 
       connectionsRef.current.set(remotePeerId, call);
     } catch (err) {
-      console.error('Error initiating call:', err);
+      console.error('❌ Error initiating call:', err);
       setIsConnecting(false);
       toast({
         title: 'Connection Error',
