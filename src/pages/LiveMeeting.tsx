@@ -376,18 +376,33 @@ export default function LiveMeeting() {
   return (
     <div className="min-h-screen bg-background flex flex-col">
       <div className="border-b bg-card px-6 py-3 flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <Video className="h-5 w-5 text-primary" />
-          <span className="font-semibold">Live Meeting</span>
+        <div className="flex items-center gap-4">
+          <div className="flex items-center gap-3">
+            <Video className="h-5 w-5 text-primary" />
+            <span className="font-semibold">Live Meeting</span>
+          </div>
+          
+          <div className="flex items-center gap-2 text-sm">
+            <Users className="h-4 w-4" />
+            <span className="font-medium">{isConnected ? '2' : '1'} Participant{isConnected ? 's' : ''}</span>
+          </div>
+          
           {isConnected && (
             <div className="flex items-center gap-2 text-sm">
               <div className="h-2 w-2 rounded-full bg-green-500 animate-pulse" />
-              Connected
+              <span className="text-green-600 dark:text-green-400 font-medium">Connected</span>
             </div>
           )}
         </div>
         
         <div className="flex items-center gap-2">
+          <div className="bg-muted px-3 py-1.5 rounded-md flex items-center gap-2">
+            <span className="text-xs text-muted-foreground">Meeting ID:</span>
+            <code className="text-xs font-mono font-semibold">{myPeerId.substring(0, 12)}...</code>
+            <Button size="sm" variant="ghost" onClick={copyId} className="h-6 w-6 p-0">
+              <Copy className="h-3 w-3" />
+            </Button>
+          </div>
           <Button size="sm" variant="outline" onClick={shareLink}>
             <Share2 className="h-4 w-4 mr-2" />
             Share Link
@@ -460,6 +475,30 @@ export default function LiveMeeting() {
         </div>
 
         <div className="w-96 bg-card border rounded-lg flex flex-col">
+          <div className="p-4 border-b space-y-3">
+            <h3 className="font-semibold flex items-center gap-2">
+              <Users className="h-4 w-4" />
+              Participants ({isConnected ? '2' : '1'})
+            </h3>
+            <div className="space-y-2">
+              <div className="flex items-center gap-2 bg-primary/10 px-3 py-2 rounded-md">
+                <div className="h-2 w-2 rounded-full bg-green-500" />
+                <span className="text-sm font-medium">You</span>
+              </div>
+              {isConnected && (
+                <div className="flex items-center gap-2 bg-blue-500/10 px-3 py-2 rounded-md">
+                  <div className="h-2 w-2 rounded-full bg-blue-500" />
+                  <span className="text-sm font-medium">Friend</span>
+                </div>
+              )}
+              {!isConnected && (
+                <div className="text-xs text-muted-foreground px-3 py-2">
+                  Waiting for others to join...
+                </div>
+              )}
+            </div>
+          </div>
+          
           <div className="p-4 border-b">
             <h3 className="font-semibold flex items-center gap-2">
               <div className={cn("h-2 w-2 rounded-full", isListening ? "bg-green-500 animate-pulse" : "bg-gray-400")} />
