@@ -47,6 +47,7 @@ export default function LiveMeeting() {
   const callRef = useRef<MediaConnection | null>(null);
   const remoteRecognitionRef = useRef<any>(null);
   const remoteAudioContextRef = useRef<AudioContext | null>(null);
+  const autoJoinInitiatedRef = useRef(false);
 
   const speechRecognition = useSpeechRecognition({
     onResult: handleSpeechResult,
@@ -411,9 +412,11 @@ export default function LiveMeeting() {
     } catch (err) {
       console.error('❌ Camera/mic access denied:', err);
       setIsConnecting(false);
+      setIsInMeeting(false); // Reset to show join screen
+      autoJoinInitiatedRef.current = false; // Allow retry
       toast({
         title: 'Access Denied',
-        description: 'Please allow camera and microphone access to join the meeting. Check your browser permissions.',
+        description: 'Please allow camera and microphone access to join the meeting. Refresh and try again.',
         variant: 'destructive'
       });
     }
@@ -616,7 +619,7 @@ export default function LiveMeeting() {
     const params = new URLSearchParams(window.location.search);
     const room = params.get('room');
     
-    if (room && !isInMeeting) {
+    if (room && !autoJoinInitiatedRef.current) {
       console.log('📋 Room ID from URL:', room);
       setRoomId(room);
       
@@ -624,19 +627,21 @@ export default function LiveMeeting() {
         title: 'Room Detected',
         description: 'Setting up connection...',
       });
+      
+      // Auto-join when peer is ready
+      const checkAndJoin = setInterval(() => {
+        if (isPeerReady && !isInMeeting && !localStream && !autoJoinInitiatedRef.current) {
+          console.log('🚀 Auto-joining meeting - all conditions met');
+          autoJoinInitiatedRef.current = true;
+          clearInterval(checkAndJoin);
+          setTimeout(() => startMeeting(), 300);
+        }
+      }, 100);
+      
+      // Cleanup after 10 seconds
+      setTimeout(() => clearInterval(checkAndJoin), 10000);
     }
   }, []);
-  
-  // Auto-join meeting once everything is ready (peer + room ID from URL)
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const room = params.get('room');
-    
-    if (room && isPeerReady && !isInMeeting && !localStream && roomId === room) {
-      console.log('🚀 Auto-joining meeting - all conditions met');
-      startMeeting();
-    }
-  }, [isPeerReady, roomId]);
 
   // Cleanup on unmount
   useEffect(() => {
