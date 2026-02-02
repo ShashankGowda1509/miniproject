@@ -198,29 +198,54 @@ export default function LiveMeeting() {
       
       if (!SpeechRecognition) {
         console.warn('⚠️ Speech recognition not supported');
+        toast({
+          title: 'Transcription Limited',
+          description: 'Your browser does not support speech recognition for remote audio.',
+        });
         return;
       }
 
+      // Note: Web Speech API has limitations with remote streams
+      // This approach tries to route audio through AudioContext
       const audioContext = new AudioContext();
       const source = audioContext.createMediaStreamSource(stream);
+      
+      // Create a gain node to ensure audio is processed
+      const gainNode = audioContext.createGain();
+      gainNode.gain.value = 1.0;
+      source.connect(gainNode);
+      
+      // Create destination to capture the audio
       const destination = audioContext.createMediaStreamDestination();
-      source.connect(destination);
+      gainNode.connect(destination);
 
       const recognition = new SpeechRecognition();
       recognition.continuous = true;
       recognition.interimResults = true;
       recognition.lang = 'en-US';
+      recognition.maxAlternatives = 1;
+
+      let isActive = true;
+
+      recognition.onstart = () => {
+        console.log('✅ Remote transcription started');
+      };
 
       recognition.onresult = (event: any) => {
         let finalTranscript = '';
+        let interimTranscript = '';
         
         for (let i = event.resultIndex; i < event.results.length; i++) {
+          const transcript = event.results[i][0].transcript;
           if (event.results[i].isFinal) {
-            finalTranscript += event.results[i][0].transcript + ' ';
+            finalTranscript += transcript + ' ';
+          } else {
+            interimTranscript += transcript;
           }
         }
 
         if (finalTranscript.trim()) {
+          console.log('📝 Friend said:', finalTranscript.trim());
           const newItem: TranscriptItem = {
             id: `remote-${Date.now()}`,
             speaker: 'ai',
@@ -232,23 +257,43 @@ export default function LiveMeeting() {
       };
 
       recognition.onerror = (event: any) => {
-        console.error('Remote recognition error:', event.error);
+        console.error('❌ Remote recognition error:', event.error);
+        if (event.error === 'no-speech') {
+          console.log('No speech detected from friend');
+        } else if (event.error === 'audio-capture') {
+          console.error('Cannot capture remote audio for transcription');
+        }
       };
 
       recognition.onend = () => {
-        if (isConnected) {
+        console.log('Remote recognition ended');
+        if (isActive && isConnected) {
+          console.log('Restarting remote recognition...');
           setTimeout(() => {
             try {
               recognition.start();
-            } catch (e) {}
+            } catch (e) {
+              console.error('Failed to restart:', e);
+            }
           }, 100);
         }
       };
 
-      recognition.start();
-      remoteRecognitionRef.current = recognition;
-      remoteAudioContextRef.current = audioContext;
-      console.log('✅ Remote transcription started');
+      // Try to start recognition - this may not work reliably with remote streams
+      try {
+        recognition.start();
+        remoteRecognitionRef.current = recognition;
+        remoteAudioContextRef.current = audioContext;
+        
+        // Add cleanup flag
+        (remoteRecognitionRef.current as any).isActive = isActive;
+      } catch (e) {
+        console.error('Failed to start remote recognition:', e);
+        toast({
+          title: 'Transcription Note',
+          description: 'Remote audio transcription may not be fully supported. You will see your own speech in the transcript.',
+        });
+      }
     } catch (error) {
       console.error('Error setting up remote transcription:', error);
     }
@@ -257,17 +302,23 @@ export default function LiveMeeting() {
   function handleCallEnd() {
     console.log('📴 Handling call end');
     
+    // Mark recognition as inactive before stopping
     if (remoteRecognitionRef.current) {
       try {
+        (remoteRecognitionRef.current as any).isActive = false;
         remoteRecognitionRef.current.stop();
-      } catch (e) {}
+      } catch (e) {
+        console.error('Error stopping remote recognition:', e);
+      }
       remoteRecognitionRef.current = null;
     }
     
     if (remoteAudioContextRef.current) {
       try {
         remoteAudioContextRef.current.close();
-      } catch (e) {}
+      } catch (e) {
+        console.error('Error closing audio context:', e);
+      }
       remoteAudioContextRef.current = null;
     }
     
@@ -436,15 +487,20 @@ export default function LiveMeeting() {
     // Stop remote transcription
     if (remoteRecognitionRef.current) {
       try {
+        (remoteRecognitionRef.current as any).isActive = false;
         remoteRecognitionRef.current.stop();
-      } catch (e) {}
+      } catch (e) {
+        console.error('Error stopping remote recognition:', e);
+      }
       remoteRecognitionRef.current = null;
     }
     
     if (remoteAudioContextRef.current) {
       try {
         remoteAudioContextRef.current.close();
-      } catch (e) {}
+      } catch (e) {
+        console.error('Error closing audio context:', e);
+      }
       remoteAudioContextRef.current = null;
     }
     
@@ -873,6 +929,23 @@ export default function LiveMeeting() {
             )}
           </CardContent>
         </Card>
+
+        {/* Transcription Info when connected */}
+        {isConnected && (
+          <Card className="bg-blue-500/10 border-blue-500/20">
+            <CardContent className="py-3">
+              <div className="flex items-start gap-3">
+                <CheckCircle className="h-5 w-5 text-blue-500 shrink-0 mt-0.5" />
+                <div className="flex-1">
+                  <p className="text-sm font-medium text-blue-600 dark:text-blue-400">Transcription Active</p>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Your speech is being transcribed. Note: Friend's audio transcription depends on browser support and may not always be available.
+                  </p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        )}
 
         {/* Grammar Feedback Banner */}
         {grammarFeedback.length > 0 && (
