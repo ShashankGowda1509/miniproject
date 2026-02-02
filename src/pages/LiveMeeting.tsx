@@ -99,24 +99,23 @@ export default function LiveMeeting() {
   useEffect(() => {
     console.log('🔧 Initializing PeerJS...');
     
-    try {
-      const peer = new Peer({
-        config: {
-          iceServers: [
-            { urls: 'stun:stun.l.google.com:19302' },
-            { urls: 'stun:global.stun.twilio.com:3478' }
-          ]
-        }
-      });
+    const peer = new Peer({
+      config: {
+        iceServers: [
+          { urls: 'stun:stun.l.google.com:19302' },
+          { urls: 'stun:global.stun.twilio.com:3478' }
+        ]
+      }
+    });
 
-      peer.on('open', (id) => {
-        console.log('✅ Peer Ready! My ID:', id);
-        setMyPeerId(id);
-        setIsPeerReady(true);
-      });
+    peer.on('open', (id) => {
+      console.log('✅ Peer Ready! My ID:', id);
+      setMyPeerId(id);
+      setIsPeerReady(true);
+    });
 
-      peer.on('call', (incomingCall) => {
-        console.log('📞 Incoming call from:', incomingCall.peer);
+    peer.on('call', (incomingCall) => {
+      console.log('📞 Incoming call from:', incomingCall.peer);
       
       // Store pending call if we don't have local stream yet
       if (!localStream) {
@@ -176,20 +175,14 @@ export default function LiveMeeting() {
 
     peerRef.current = peer;
 
-      return () => {
-        console.log('🧹 Cleaning up peer...');
-        if (peer && !peer.destroyed) {
-          peer.destroy();
-        }
-      };
-    } catch (error) {
-      console.error('❌ Failed to initialize PeerJS:', error);
-      toast({
-        title: 'Connection Error',
-        description: 'Failed to initialize peer connection. Please refresh the page.',
-        variant: 'destructive'
-      });
-    }
+    return () => {
+      console.log('🧹 Cleaning up peer...');
+      if (peer && !peer.destroyed) {
+        peer.destroy();
+      }
+    };
+  }, []);
+
   // Effect to attach local stream to video
   useEffect(() => {
     if (videoRef.current && localStream) {
