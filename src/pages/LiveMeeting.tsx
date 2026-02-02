@@ -125,7 +125,7 @@ export default function LiveMeeting() {
         if (!isInMeeting && !autoJoinInitiatedRef.current) {
           console.log('🚀 Auto-starting meeting to answer call...');
           autoJoinInitiatedRef.current = true;
-          setTimeout(() => startMeeting(), 100);
+          setTimeout(() => joinMeeting(), 100);
         }
         return;
       }
@@ -687,7 +687,7 @@ export default function LiveMeeting() {
           // Small delay to ensure state is stable
           setTimeout(() => {
             console.log('▶️ Starting meeting now...');
-            startMeeting();
+            joinMeeting();
           }, 200);
         }
       }, 100);
