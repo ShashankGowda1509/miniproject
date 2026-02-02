@@ -237,10 +237,17 @@ export default function LiveMeeting() {
   // Effect to initiate outgoing call when conditions are met
   useEffect(() => {
     if (localStream && roomId && roomId.trim() && !isConnected && !isConnecting && isPeerReady && !pendingIncomingCallRef.current) {
+      // Don't call if roomId is our own peer ID
+      if (roomId === myPeerId) {
+        console.log('⚠️ RoomId matches own PeerId - not calling self');
+        setRoomId(''); // Clear invalid roomId
+        return;
+      }
+      
       console.log('📞 Initiating outgoing call to:', roomId);
       callPeer(roomId);
     }
-  }, [localStream, roomId, isConnected, isConnecting, isPeerReady]);
+  }, [localStream, roomId, isConnected, isConnecting, isPeerReady, myPeerId]);
 
   function startRemoteTranscription(stream: MediaStream) {
     try {
@@ -445,17 +452,26 @@ export default function LiveMeeting() {
       setIsConnecting(false);
       speechRecognition.startListening();
       
+      // Clear roomId if creating new meeting (so we don't try to call ourselves)
+      // Keep roomId only if we're joining someone
+      if (!roomId || roomId.trim() === '') {
+        console.log('📝 Creating new meeting - clearing roomId');
+        setRoomId(''); // Clear to prevent auto-call
+      } else {
+        console.log('📝 Joining existing meeting - keeping roomId:', roomId);
+      }
+      
       const welcomeItem: TranscriptItem = {
         id: 'system-welcome',
         speaker: 'ai',
-        text: 'Meeting started. Live transcription is active. Share your room link to invite others.',
+        text: roomId ? 'Meeting started. Connecting to your friend...' : 'Meeting started. Live transcription is active. Share your room link to invite others.',
         timestamp: new Date(),
       };
       setTranscript([welcomeItem]);
 
       toast({
         title: 'Joined Meeting',
-        description: 'You can now share the room link with others.',
+        description: roomId ? 'Connecting to friend...' : 'You can now share the room link with others.',
       });
 
     } catch (err) {
@@ -479,6 +495,13 @@ export default function LiveMeeting() {
 
     if (targetPeerId === myPeerId) {
       console.error('❌ Cannot call yourself');
+      setIsConnecting(false);
+      setRoomId(''); // Clear invalid room ID
+      toast({
+        title: 'Invalid Room ID',
+        description: 'You cannot call yourself. Please use a different Peer ID.',
+        variant: 'destructive'
+      });
       return;
     }
 
