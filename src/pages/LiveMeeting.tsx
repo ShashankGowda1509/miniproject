@@ -38,14 +38,15 @@ export default function LiveMeeting() {
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [isConnecting, setIsConnecting] = useState(false);
   const [isPeerReady, setIsPeerReady] = useState(false);
-  const [pendingCall, setPendingCall] = useState<MediaConnection | null>(null);
   const [remoteAudioContexts, setRemoteAudioContexts] = useState<Map<string, AudioContext>>(new Map());
+  const [activePeers, setActivePeers] = useState<Set<string>>(new Set());
   
   const videoRef = useRef<HTMLVideoElement>(null);
   const peerRef = useRef<Peer | null>(null);
   const connectionsRef = useRef<Map<string, MediaConnection>>(new Map());
   const remoteVideoRefs = useRef<Map<string, HTMLVideoElement>>(new Map());
   const remoteRecognitionRef = useRef<Map<string, any>>(new Map());
+  const pendingCallsRef = useRef<Map<string, MediaConnection>>(new Map());
 
   const speechRecognition = useSpeechRecognition({
     onResult: handleSpeechResult,
@@ -119,12 +120,23 @@ export default function LiveMeeting() {
       // If we have local stream, answer immediately
       if (localStream) {
         console.log('Answering call with local stream...');
+        
+        // Check if already connected
+        if (connectionsRef.current.has(call.peer)) {
+          console.log('⚠️ Already connected to:', call.peer, '- ignoring duplicate call');
+          return;
+        }
+        
         call.answer(localStream);
+        connectionsRef.current.set(call.peer, call);
         
         call.on('stream', (remoteStream) => {
           console.log('✅ Received remote stream from:', call.peer);
           console.log('Remote stream tracks - Video:', remoteStream.getVideoTracks().length, 'Audio:', remoteStream.getAudioTracks().length);
           addRemoteParticipant(call.peer, remoteStream);
+          
+          // Add to active peers
+          setActivePeers(prev => new Set(prev).add(call.peer));
           
           toast({
             title: 'User Joined',
@@ -135,6 +147,11 @@ export default function LiveMeeting() {
         call.on('close', () => {
           console.log('❌ Call closed with:', call.peer);
           removeRemoteParticipant(call.peer);
+          setActivePeers(prev => {
+            const newSet = new Set(prev);
+            newSet.delete(call.peer);
+            return newSet;
+          });
           toast({
             title: 'User Left',
             description: `User ${call.peer.substring(0, 8)} has left the meeting`,
@@ -142,19 +159,18 @@ export default function LiveMeeting() {
         });
 
         call.on('error', (err) => {
-          console.error('Call error:', err);
+          console.error('Call error with:', call.peer, err);
+          removeRemoteParticipant(call.peer);
           toast({
             title: 'Connection Error',
-            description: 'Connection error with peer. Please check if peer is online.',
+            description: `Connection error with ${call.peer.substring(0, 8)}`,
             variant: 'destructive'
           });
         });
-
-        connectionsRef.current.set(call.peer, call);
       } else {
         // Store the call to answer when stream is ready
-        console.log('⏳ No local stream yet, storing incoming call...');
-        setPendingCall(call);
+        console.log('⏳ No local stream yet, storing incoming call from:', call.peer);
+        pendingCallsRef.current.set(call.peer, call);
         
         toast({
           title: 'Incoming Call',
@@ -224,39 +240,57 @@ export default function LiveMeeting() {
 
   // Effect to answer pending calls when localStream becomes available
   useEffect(() => {
-    if (localStream && pendingCall) {
-      console.log('✅ Local stream ready, answering pending call from:', pendingCall.peer);
+    if (localStream && pendingCallsRef.current.size > 0) {
+      console.log('✅ Local stream ready, answering', pendingCallsRef.current.size, 'pending call(s)');
       
-      pendingCall.answer(localStream);
-      
-      pendingCall.on('stream', (remoteStream) => {
-        console.log('✅ Received remote stream from pending call:', pendingCall.peer);
-        addRemoteParticipant(pendingCall.peer, remoteStream);
+      pendingCallsRef.current.forEach((call, peerId) => {
+        console.log('Answering pending call from:', peerId);
         
-        toast({
-          title: 'Connected',
-          description: `Connected to ${pendingCall.peer.substring(0, 8)}`,
+        // Check if already connected
+        if (connectionsRef.current.has(peerId)) {
+          console.log('⚠️ Already connected to:', peerId);
+          pendingCallsRef.current.delete(peerId);
+          return;
+        }
+        
+        call.answer(localStream);
+        
+        call.on('stream', (remoteStream) => {
+          console.log('✅ Received remote stream from pending call:', peerId);
+          addRemoteParticipant(peerId, remoteStream);
+          setActivePeers(prev => new Set(prev).add(peerId));
+          
+          toast({
+            title: 'Connected',
+            description: `Connected to ${peerId.substring(0, 8)}`,
+          });
         });
-      });
 
-      pendingCall.on('close', () => {
-        console.log('Call closed with:', pendingCall.peer);
-        removeRemoteParticipant(pendingCall.peer);
-      });
-
-      pendingCall.on('error', (err) => {
-        console.error('Pending call error:', err);
-        toast({
-          title: 'Connection Error',
-          description: 'Failed to connect with peer',
-          variant: 'destructive'
+        call.on('close', () => {
+          console.log('Call closed with:', peerId);
+          removeRemoteParticipant(peerId);
+          setActivePeers(prev => {
+            const newSet = new Set(prev);
+            newSet.delete(peerId);
+            return newSet;
+          });
         });
-      });
 
-      connectionsRef.current.set(pendingCall.peer, pendingCall);
-      setPendingCall(null);
+        call.on('error', (err) => {
+          console.error('Pending call error with:', peerId, err);
+          toast({
+            title: 'Connection Error',
+            description: `Failed to connect with ${peerId.substring(0, 8)}`,
+            variant: 'destructive'
+          });
+        });
+
+        connectionsRef.current.set(peerId, call);
+      });
+      
+      pendingCallsRef.current.clear();
     }
-  }, [localStream, pendingCall]);
+  }, [localStream]);
 
   // Separate effect to handle call initiation when localStream is ready
   useEffect(() => {
@@ -271,13 +305,18 @@ export default function LiveMeeting() {
         videoTracks: localStream.getVideoTracks().length,
         audioTracks: localStream.getAudioTracks().length
       });
-      const timer = setTimeout(() => {
-        console.log('📞 Initiating call to peer:', roomId);
-        callPeer(roomId);
-      }, 1500); // Increased delay to ensure both peers are fully ready
-      return () => clearTimeout(timer);
+      
+      // Don't call if already connected
+      if (!connectionsRef.current.has(roomId)) {
+        const timer = setTimeout(() => {
+          console.log('📞 Initiating call to peer:', roomId);
+          callPeer(roomId);
+        }, 1500);
+        return () => clearTimeout(timer);
+      } else {
+        console.log('✅ Already connected to:', roomId);
+      }
     } else if (isInMeeting && roomId && roomId.trim() && localStream && isPeerReady) {
-      // Check why we're not connecting
       if (roomId === myPeerId) {
         console.log('⚠️ Not connecting: Cannot call yourself');
         toast({
@@ -579,11 +618,12 @@ export default function LiveMeeting() {
           audio: remoteStream.getAudioTracks().length
         });
         addRemoteParticipant(remotePeerId, remoteStream);
+        setActivePeers(prev => new Set(prev).add(remotePeerId));
         setIsConnecting(false);
         
         toast({
           title: 'Connected!',
-          description: 'Successfully connected to peer. You can now talk.',
+          description: `Successfully connected to ${remotePeerId.substring(0, 8)}`,
         });
       });
 
@@ -591,6 +631,11 @@ export default function LiveMeeting() {
         clearTimeout(connectionTimeout);
         console.log('❌ Call closed with:', remotePeerId);
         removeRemoteParticipant(remotePeerId);
+        setActivePeers(prev => {
+          const newSet = new Set(prev);
+          newSet.delete(remotePeerId);
+          return newSet;
+        });
       });
 
       call.on('error', (err) => {
@@ -645,6 +690,12 @@ export default function LiveMeeting() {
     // Close all peer connections
     connectionsRef.current.forEach(conn => conn.close());
     connectionsRef.current.clear();
+    
+    // Clear pending calls
+    pendingCallsRef.current.clear();
+    
+    // Clear active peers
+    setActivePeers(new Set());
     
     // Stop local stream
     if (localStream) {
@@ -782,6 +833,16 @@ export default function LiveMeeting() {
           context.close();
         } catch (e) {}
       });
+      
+      // Close all connections
+      connectionsRef.current.forEach(conn => {
+        try {
+          conn.close();
+        } catch (e) {}
+      });
+      
+      // Clear pending calls
+      pendingCallsRef.current.clear();
       
       if (localStream) {
         localStream.getTracks().forEach(track => track.stop());
@@ -938,8 +999,14 @@ export default function LiveMeeting() {
     <div className="h-full flex flex-col lg:flex-row gap-4 p-4">
       {/* Main Video Area */}
       <div className="flex-1 flex flex-col gap-4">
-        {/* Video Grid */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 flex-1">
+        {/* Video Grid - Dynamic layout based on participant count */}
+        <div className={cn(
+          "grid gap-4 flex-1",
+          participants.length === 0 && "grid-cols-1 md:grid-cols-2",
+          participants.length === 1 && "grid-cols-1 md:grid-cols-2",
+          participants.length === 2 && "grid-cols-1 md:grid-cols-3",
+          participants.length >= 3 && "grid-cols-1 md:grid-cols-2 lg:grid-cols-3"
+        )}>
           {/* User Video */}
           <div className="relative bg-gray-900 rounded-xl overflow-hidden aspect-video">
             <video
@@ -1010,48 +1077,85 @@ export default function LiveMeeting() {
                     // Only set if different to avoid unnecessary updates
                     if (el.srcObject !== participant.stream) {
                       console.log('🎥 Attaching stream for participant:', participant.id);
+                      console.log('Stream active:', participant.stream.active);
                       console.log('Stream tracks:', {
                         video: participant.stream.getVideoTracks().length,
                         audio: participant.stream.getAudioTracks().length,
                         videoEnabled: participant.stream.getVideoTracks()[0]?.enabled,
-                        audioEnabled: participant.stream.getAudioTracks()[0]?.enabled
+                        audioEnabled: participant.stream.getAudioTracks()[0]?.enabled,
+                        videoState: participant.stream.getVideoTracks()[0]?.readyState,
+                        audioState: participant.stream.getAudioTracks()[0]?.readyState
                       });
                       
                       el.srcObject = participant.stream;
                       el.muted = false;
                       el.volume = 1.0;
                       
-                      // Force video attributes for compatibility
+                      // Force video attributes for compatibility across all devices
                       el.setAttribute('playsinline', 'true');
                       el.setAttribute('autoplay', 'true');
+                      el.setAttribute('webkit-playsinline', 'true');
                       
-                      // Play video with proper error handling
+                      // Ensure video tracks are enabled
+                      participant.stream.getVideoTracks().forEach(track => {
+                        console.log('Video track state:', track.id, track.readyState, track.enabled);
+                        if (!track.enabled) {
+                          console.warn('Video track is disabled, attempting to enable...');
+                          track.enabled = true;
+                        }
+                      });
+                      
+                      // Play video with comprehensive error handling and retries
                       const playVideo = async () => {
                         try {
                           await el.play();
-                          console.log('✅ Remote video playing:', participant.id);
+                          console.log('✅ Remote video playing successfully:', participant.id);
                         } catch (e: any) {
-                          console.error('❌ Error playing remote video:', e);
+                          console.error('❌ Error playing remote video:', participant.id, e);
                           
-                          // Try multiple retry strategies
+                          // Different strategies based on error type
                           if (e.name === 'NotAllowedError') {
-                            console.log('⚠️ Autoplay blocked, waiting for user interaction');
-                            // User interaction will trigger play
+                            console.log('⚠️ Autoplay blocked by browser policy, will retry with user interaction');
+                            // Clicking anywhere on the page should trigger play
+                            const clickHandler = async () => {
+                              try {
+                                await el.play();
+                                console.log('✅ Video playing after user interaction');
+                                document.removeEventListener('click', clickHandler);
+                              } catch (err) {
+                                console.error('Failed to play after click:', err);
+                              }
+                            };
+                            document.addEventListener('click', clickHandler);
+                          } else if (e.name === 'NotSupportedError') {
+                            console.error('❌ Video format not supported');
                           } else {
-                            // Retry with delays
+                            // Generic retry with progressive delays
+                            console.log('Attempting retry 1/3...');
                             setTimeout(async () => {
                               try {
                                 await el.play();
-                                console.log('✅ Retry successful');
+                                console.log('✅ Retry 1 successful');
                               } catch (retryErr) {
-                                console.error('❌ Retry failed:', retryErr);
-                                // Final retry after longer delay
+                                console.error('❌ Retry 1 failed, attempting retry 2/3...');
                                 setTimeout(async () => {
                                   try {
                                     await el.play();
-                                    console.log('✅ Final retry successful');
+                                    console.log('✅ Retry 2 successful');
                                   } catch (finalErr) {
-                                    console.error('❌ All retries failed:', finalErr);
+                                    console.error('❌ Retry 2 failed, attempting final retry 3/3...');
+                                    setTimeout(async () => {
+                                      try {
+                                        await el.play();
+                                        console.log('✅ Final retry successful');
+                                      } catch (lastErr) {
+                                        console.error('❌ All retries exhausted:', lastErr);
+                                        // Check if stream is still active
+                                        if (!participant.stream.active) {
+                                          console.error('Stream is no longer active');
+                                        }
+                                      }
+                                    }, 3000);
                                   }
                                 }, 2000);
                               }
@@ -1068,11 +1172,40 @@ export default function LiveMeeting() {
                 autoPlay
                 playsInline
                 className="w-full h-full object-cover"
-                onLoadedMetadata={() => console.log('✅ Remote video metadata loaded:', participant.id)}
+                onLoadedMetadata={(e) => {
+                  const video = e.target as HTMLVideoElement;
+                  console.log('✅ Remote video metadata loaded:', participant.id, {
+                    duration: video.duration,
+                    videoWidth: video.videoWidth,
+                    videoHeight: video.videoHeight
+                  });
+                }}
                 onCanPlay={() => console.log('✅ Remote video can play:', participant.id)}
-                onPlaying={() => console.log('✅ Remote video playing:', participant.id)}
-                onError={(e) => console.error('❌ Remote video error:', participant.id, e)}
+                onPlaying={() => console.log('✅ Remote video is playing:', participant.id)}
+                onError={(e) => {
+                  const video = e.target as HTMLVideoElement;
+                  console.error('❌ Remote video error:', participant.id, {
+                    error: video.error,
+                    code: video.error?.code,
+                    message: video.error?.message
+                  });
+                }}
+                onStalled={() => console.warn('⚠️ Remote video stalled:', participant.id)}
+                onSuspend={() => console.warn('⚠️ Remote video suspended:', participant.id)}
+                onWaiting={() => console.log('⏳ Remote video waiting:', participant.id)}
               />
+              
+              {/* Show loading state if video not playing */}
+              {participant.stream && !participant.isVideoOn && (
+                <div className="absolute inset-0 flex items-center justify-center bg-gray-800">
+                  <div className="w-20 h-20 rounded-full bg-primary flex items-center justify-center">
+                    <span className="text-2xl font-bold text-primary-foreground">
+                      {participant.name.substring(0, 2).toUpperCase()}
+                    </span>
+                  </div>
+                </div>
+              )}
+              
               <div className="absolute bottom-4 left-4 flex items-center gap-2">
                 <span className="bg-black/50 text-white px-2 py-1 rounded text-sm">
                   {participant.name}
