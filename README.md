@@ -1,4 +1,18 @@
-# Welcome to your Lovable project
+# Welcome to Interview AI Coach
+
+An AI-powered interview practice platform with real-time transcription, video calling, and feedback.
+
+## ⚠️ Important: Deployment Required for Friend Connection
+
+**If you want to video call with friends, you MUST deploy this app!**
+
+Running on localhost (`http://localhost:5173`) means only YOU can access it. Your friends will get "not found" errors.
+
+**See [DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md) for step-by-step instructions.**
+
+Quick deploy: `npm run build && vercel --prod`
+
+---
 
 ## Project info
 
@@ -62,7 +76,24 @@ This project is built with:
 
 ## How can I deploy this project?
 
+### Option 1: Vercel (Recommended)
+```bash
+npm install -g vercel
+vercel login
+npm run build
+vercel --prod
+```
+
+### Option 2: Lovable
 Simply open [Lovable](https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID) and click on Share -> Publish.
+
+### Option 3: Netlify
+```bash
+npm run build
+netlify deploy --prod
+```
+
+**Full deployment guide:** See [DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md) for detailed instructions including Render and localhost alternatives.
 
 ## Can I connect a custom domain to my Lovable project?
 

@@ -218,12 +218,32 @@ export default function LiveMeeting() {
 
   // Separate effect to handle call initiation when localStream is ready
   useEffect(() => {
-    if (localStream && roomId && roomId !== myPeerId && isInMeeting && isPeerReady) {
+    // Only attempt to connect if there's a roomId and it's different from our own
+    if (localStream && roomId && roomId.trim() && roomId !== myPeerId && isInMeeting && isPeerReady) {
+      console.log('Conditions met for calling peer:', { 
+        hasLocalStream: !!localStream, 
+        roomId, 
+        myPeerId,
+        isInMeeting,
+        isPeerReady 
+      });
       const timer = setTimeout(() => {
         console.log('Attempting to call peer:', roomId);
         callPeer(roomId);
       }, 1000);
       return () => clearTimeout(timer);
+    } else if (isInMeeting && roomId && roomId.trim() && localStream && isPeerReady) {
+      // Check why we're not connecting
+      if (roomId === myPeerId) {
+        console.log('Not connecting: Cannot call yourself');
+        toast({
+          title: 'Invalid Room ID',
+          description: 'You cannot use your own Peer ID as the Room ID.',
+          variant: 'destructive'
+        });
+      }
+    } else if (isInMeeting && roomId && roomId.trim() && !localStream) {
+      console.log('Waiting for local stream before connecting to peer...');
     }
   }, [localStream, roomId, myPeerId, isInMeeting, isPeerReady]);
 
@@ -259,6 +279,16 @@ export default function LiveMeeting() {
       toast({
         title: 'Please Wait',
         description: 'Still initializing peer connection...',
+        variant: 'destructive'
+      });
+      return;
+    }
+
+    // Validate roomId if user is trying to join (not create)
+    if (roomId && !roomId.trim()) {
+      toast({
+        title: 'Invalid Room ID',
+        description: 'Please enter a valid Room ID or leave empty to create a new meeting.',
         variant: 'destructive'
       });
       return;
@@ -456,16 +486,46 @@ export default function LiveMeeting() {
     }
   }
 
+  function isLocalhost() {
+    return window.location.hostname === 'localhost' || 
+           window.location.hostname === '127.0.0.1' || 
+           window.location.hostname === '';
+  }
+
   function copyRoomLink() {
-    const link = `${window.location.origin}${window.location.pathname}?room=${myPeerId}`;
-    navigator.clipboard.writeText(link);
-    toast({
-      title: 'Link Copied!',
-      description: 'Share this link with others to join your meeting.',
-    });
+    const isLocal = isLocalhost();
+    
+    if (isLocal) {
+      // For localhost, only copy the peer ID
+      navigator.clipboard.writeText(myPeerId);
+      toast({
+        title: 'Peer ID Copied!',
+        description: '⚠️ Running on localhost. Share this Peer ID only. Your friend must run the app locally too.',
+      });
+    } else {
+      // For deployed apps, copy the full link
+      const link = `${window.location.origin}${window.location.pathname}?room=${myPeerId}`;
+      navigator.clipboard.writeText(link);
+      toast({
+        title: 'Link Copied!',
+        description: 'Share this link with others to join your meeting.',
+      });
+    }
   }
 
   function shareRoomLink() {
+    const isLocal = isLocalhost();
+    
+    if (isLocal) {
+      // For localhost, just copy peer ID
+      navigator.clipboard.writeText(myPeerId);
+      toast({
+        title: 'Peer ID Copied!',
+        description: '⚠️ Localhost detected. Only the Peer ID was copied. Both users must run the app locally.',
+      });
+      return;
+    }
+    
     const link = `${window.location.origin}${window.location.pathname}?room=${myPeerId}`;
     
     if (navigator.share) {
@@ -487,11 +547,17 @@ export default function LiveMeeting() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const room = params.get('room');
-    if (room && !isInMeeting) {
+    if (room && !isInMeeting && !roomId) {
       console.log('Room ID from URL:', room);
       setRoomId(room);
+      
+      // Show toast to guide user to join
+      toast({
+        title: 'Room ID Detected',
+        description: 'Click "Join Meeting" to connect with your friend.',
+      });
     }
-  }, []);
+  }, [isInMeeting, roomId]);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -525,9 +591,9 @@ export default function LiveMeeting() {
                 Room ID (optional - leave empty to create new room)
               </label>
               <Input
-                placeholder="Enter room ID from friend or leave empty"
+                placeholder="Enter peer ID to join existing meeting"
                 value={roomId}
-                onChange={(e) => setRoomId(e.target.value)}
+                onChange={(e) => setRoomId(e.target.value.trim())}
               />
               {myPeerId && (
                 <div className="bg-primary/5 border border-primary/20 rounded-lg p-3 mt-2">
@@ -543,6 +609,13 @@ export default function LiveMeeting() {
                       <Copy className="h-3 w-3" />
                     </Button>
                   </div>
+                  {isLocalhost() && (
+                    <div className="mt-2 bg-yellow-500/10 border border-yellow-500/20 rounded p-2">
+                      <p className="text-xs text-yellow-600 dark:text-yellow-400">
+                        ⚠️ <strong>Running on localhost.</strong> Your friends must also run this app locally on their computer. Links won't work - only share the Peer ID above.
+                      </p>
+                    </div>
+                  )}
                 </div>
               )}
               {!isPeerReady && (
@@ -580,21 +653,51 @@ export default function LiveMeeting() {
                 <div className="text-sm">
                   <p className="font-medium text-blue-500 mb-2">How to use:</p>
                   <ol className="space-y-2 text-muted-foreground list-decimal list-inside">
-                    <li><strong>To start:</strong> Click "{roomId ? 'Join Meeting' : 'Create Meeting'}" to enable your camera</li>
-                    <li><strong>To invite:</strong> Share the "Room ID" or "Link" shown after creating</li>
-                    <li><strong>For others to join:</strong> They must enter your Room ID and click "Join Meeting"</li>
+                    <li><strong>To create a new meeting:</strong> Leave Room ID empty and click "Create Meeting"</li>
+                    <li><strong>To join an existing meeting:</strong> Enter the Peer ID shared by your friend in the "Room ID" field, then click "Join Meeting"</li>
+                    <li><strong>To invite others:</strong> After creating, copy and share your "Peer ID" (shown above) with them</li>
+                    <li><strong>Important:</strong> The person creating the meeting must start first, then share their Peer ID</li>
                     <li><strong>Device permissions:</strong> Always allow camera and microphone when prompted</li>
-                    <li><strong>Troubleshooting:</strong> If video doesn't show:
+                    <li><strong>Troubleshooting:</strong> If connection fails:
                       <ul className="list-disc list-inside ml-2 mt-1 space-y-1">
-                        <li>Check browser permissions in settings</li>
-                        <li>Try refreshing the page</li>
-                        <li>Ensure your camera is not in use by another app</li>
+                        <li>Verify the Peer ID is correct (no extra spaces)</li>
+                        <li>Ensure both users are online and in meetings</li>
+                        <li>Try refreshing and reconnecting</li>
+                        <li>Check that your camera/mic permissions are enabled</li>
                       </ul>
                     </li>
                   </ol>
                 </div>
               </div>
             </div>
+            
+            {isLocalhost() && (
+              <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-lg p-4">
+                <div className="flex gap-3">
+                  <AlertCircle className="h-5 w-5 text-yellow-600 dark:text-yellow-400 shrink-0 mt-0.5" />
+                  <div className="text-sm">
+                    <p className="font-medium text-yellow-600 dark:text-yellow-400 mb-2">⚠️ Localhost Mode Detected</p>
+                    <div className="text-muted-foreground space-y-2">
+                      <p><strong>Current Limitation:</strong> You're running on localhost, which means:</p>
+                      <ul className="list-disc list-inside ml-2 space-y-1">
+                        <li>Friends cannot access your localhost URL</li>
+                        <li>Sharing links will NOT work</li>
+                        <li>Both you and your friend must run the app on your own computers</li>
+                      </ul>
+                      <p className="mt-2"><strong>To connect with friends:</strong></p>
+                      <ol className="list-decimal list-inside ml-2 space-y-1">
+                        <li>Both of you run <code className="bg-muted px-1 rounded">npm run dev</code> locally</li>
+                        <li>Both open <code className="bg-muted px-1 rounded">localhost:5173</code> in your browsers</li>
+                        <li>One person creates a meeting and shares their Peer ID</li>
+                        <li>The other person enters that Peer ID and joins</li>
+                      </ol>
+                      <p className="mt-2"><strong>For easier sharing (recommended):</strong></p>
+                      <p className="ml-2">Deploy this app to Vercel, Netlify, or Render so both users can access the same URL.</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
             
             <Button 
               className="w-full btn-gradient" 
@@ -754,7 +857,9 @@ export default function LiveMeeting() {
           <CardContent className="py-3">
             <div className="flex items-center justify-between">
               <div className="flex-1">
-                <p className="text-xs text-muted-foreground">Your Room ID</p>
+                <p className="text-xs text-muted-foreground">
+                  {isLocalhost() ? 'Your Peer ID (share this with friends)' : 'Your Room ID'}
+                </p>
                 <p className="text-sm font-mono truncate">{myPeerId}</p>
               </div>
               <div className="flex gap-2">
@@ -768,6 +873,13 @@ export default function LiveMeeting() {
                 </Button>
               </div>
             </div>
+            {isLocalhost() && (
+              <div className="mt-2 bg-yellow-500/10 border border-yellow-500/20 rounded p-2">
+                <p className="text-xs text-yellow-600 dark:text-yellow-400">
+                  ⚠️ <strong>Localhost Mode:</strong> You can only connect with friends who are also running this app on their own computer. Share the Peer ID above, not a link.
+                </p>
+              </div>
+            )}
           </CardContent>
         </Card>
 

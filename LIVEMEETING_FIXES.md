@@ -2,7 +2,37 @@
 
 ## Problems Identified and Resolved
 
-### 1. **Video Not Showing**
+### 1. **"No Peer ID to Connect" Error - FIXED**
+**Issue:** When sharing a peer ID, users get "no peer id to connect" error and connection fails.
+
+**Root Causes:**
+- No validation for empty or whitespace-only Room IDs before attempting connection
+- Missing feedback when roomId was empty but user tried to join
+- Input field allowed spaces which could cause silent failures
+- No clear error messages explaining why connection wasn't attempted
+- Unclear UI instructions about the difference between creating and joining
+
+**Fixes Applied:**
+- Added validation in `joinMeeting()` to check for empty/whitespace Room IDs
+- Auto-trim whitespace from roomId input field to prevent accidental spaces
+- Enhanced useEffect logic to detect and explain why connection isn't happening:
+  - Logs when waiting for local stream
+  - Shows error toast if trying to connect to your own peer ID
+  - Provides detailed logging for debugging connection conditions
+- Updated UI placeholder text from "Enter room ID from friend" to "Enter peer ID to join existing meeting" for clarity
+- Improved help instructions to clearly explain:
+  - How to create a new meeting (leave Room ID empty)
+  - How to join existing meeting (enter friend's Peer ID)
+  - That the host must create the meeting first before others can join
+  - Common troubleshooting steps (verify Peer ID, no extra spaces, both online)
+
+**Code Changes:**
+1. In `joinMeeting()`: Added roomId validation before allowing connection attempt
+2. In roomId useEffect: Added comprehensive logging and error feedback for various failure scenarios
+3. In Input component: Changed to `e.target.value.trim()` to prevent whitespace issues
+4. In help text: Completely rewrote instructions for better clarity
+
+### 2. **Video Not Showing**
 **Issue:** Remote video streams were not displaying in the meeting.
 
 **Root Causes:**
