@@ -33,20 +33,20 @@ export default function LiveMeeting() {
   const [isAudioOn, setIsAudioOn] = useState(true);
   const [transcript, setTranscript] = useState<TranscriptItem[]>([]);
   const [grammarFeedback, setGrammarFeedback] = useState<GrammarFeedback[]>([]);
-  const [participants, setParticipants] = useState<MeetingParticipant[]>([]);
   const [myPeerId, setMyPeerId] = useState<string>('');
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
+  const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
+  const [remotePeerId, setRemotePeerId] = useState<string>('');
   const [isConnecting, setIsConnecting] = useState(false);
   const [isPeerReady, setIsPeerReady] = useState(false);
-  const [remoteAudioContexts, setRemoteAudioContexts] = useState<Map<string, AudioContext>>(new Map());
-  const [activePeers, setActivePeers] = useState<Set<string>>(new Set());
+  const [isConnected, setIsConnected] = useState(false);
   
   const videoRef = useRef<HTMLVideoElement>(null);
+  const remoteVideoRef = useRef<HTMLVideoElement>(null);
   const peerRef = useRef<Peer | null>(null);
-  const connectionsRef = useRef<Map<string, MediaConnection>>(new Map());
-  const remoteVideoRefs = useRef<Map<string, HTMLVideoElement>>(new Map());
-  const remoteRecognitionRef = useRef<Map<string, any>>(new Map());
-  const pendingCallsRef = useRef<Map<string, MediaConnection>>(new Map());
+  const callRef = useRef<MediaConnection | null>(null);
+  const remoteRecognitionRef = useRef<any>(null);
+  const remoteAudioContextRef = useRef<AudioContext | null>(null);
 
   const speechRecognition = useSpeechRecognition({
     onResult: handleSpeechResult,
@@ -95,315 +95,117 @@ export default function LiveMeeting() {
 
   // Initialize PeerJS
   useEffect(() => {
-    console.log('Initializing PeerJS...');
+    console.log('🔧 Initializing PeerJS...');
     const peer = new Peer({
       config: {
         iceServers: [
           { urls: 'stun:stun.l.google.com:19302' },
-          { urls: 'stun:global.stun.twilio.com:3478' },
-          { urls: 'stun:stun1.l.google.com:19302' },
-          { urls: 'stun:stun2.l.google.com:19302' }
+          { urls: 'stun:global.stun.twilio.com:3478' }
         ]
       }
     });
 
     peer.on('open', (id) => {
-      console.log('✅ Peer connection established. My peer ID:', id);
+      console.log('✅ Peer Ready! My ID:', id);
       setMyPeerId(id);
       setIsPeerReady(true);
-      setIsConnecting(false);
-      
-      // Check if URL has a room parameter that matches our own ID (shouldn't happen)
-      const params = new URLSearchParams(window.location.search);
-      const urlRoom = params.get('room');
-      if (urlRoom && urlRoom === id) {
-        console.warn('⚠️ URL room parameter matches own peer ID - clearing it');
-        window.history.replaceState({}, '', window.location.pathname);
-      }
     });
 
-    peer.on('call', (call) => {
-      console.log('📞 Receiving call from:', call.peer);
-      console.log('Current state:', {
-        myPeerId: peer.id,
-        isInMeeting,
-        hasLocalStream: !!localStream,
-        currentRoomId: roomId,
-        isPeerReady
-      });
+    peer.on('call', (incomingCall) => {
+      console.log('📞 Incoming call from:', incomingCall.peer);
       
-      // Prevent self-calls
-      if (call.peer === peer.id) {
-        console.error('❌ CRITICAL: Received self-call attempt! Peer ID:', call.peer);
-        toast({
-          title: 'Connection Error',
-          description: 'Cannot connect to yourself. This should not happen.',
-          variant: 'destructive'
-        });
-        call.close();
+      // Only accept call if we have local stream
+      if (!localStream) {
+        console.log('⏳ No local stream, waiting...');
         return;
       }
       
-      // If we have local stream, answer immediately
-      if (localStream) {
-        console.log('Answering call with local stream...');
-        
-        // Check if already connected
-        if (connectionsRef.current.has(call.peer)) {
-          console.log('⚠️ Already connected to:', call.peer, '- ignoring duplicate call');
-          return;
-        }
-        
-        call.answer(localStream);
-        connectionsRef.current.set(call.peer, call);
-        
-        call.on('stream', (remoteStream) => {
-          console.log('✅ Received remote stream from:', call.peer);
-          console.log('Remote stream tracks - Video:', remoteStream.getVideoTracks().length, 'Audio:', remoteStream.getAudioTracks().length);
-          addRemoteParticipant(call.peer, remoteStream);
-          
-          // Add to active peers
-          setActivePeers(prev => new Set(prev).add(call.peer));
-          
-          toast({
-            title: 'User Joined',
-            description: `User ${call.peer.substring(0, 8)} has joined the meeting`,
-          });
-        });
-
-        call.on('close', () => {
-          console.log('❌ Call closed with:', call.peer);
-          removeRemoteParticipant(call.peer);
-          setActivePeers(prev => {
-            const newSet = new Set(prev);
-            newSet.delete(call.peer);
-            return newSet;
-          });
-          toast({
-            title: 'User Left',
-            description: `User ${call.peer.substring(0, 8)} has left the meeting`,
-          });
-        });
-
-        call.on('error', (err) => {
-          console.error('Call error with:', call.peer, err);
-          removeRemoteParticipant(call.peer);
-          toast({
-            title: 'Connection Error',
-            description: `Connection error with ${call.peer.substring(0, 8)}`,
-            variant: 'destructive'
-          });
-        });
-      } else {
-        // Store the call to answer when stream is ready
-        console.log('⏳ No local stream yet, storing incoming call from:', call.peer);
-        pendingCallsRef.current.set(call.peer, call);
+      console.log('✅ Answering call...');
+      incomingCall.answer(localStream);
+      
+      incomingCall.on('stream', (stream) => {
+        console.log('✅ Received remote stream');
+        setRemoteStream(stream);
+        setRemotePeerId(incomingCall.peer);
+        setIsConnected(true);
+        setIsConnecting(false);
+        startRemoteTranscription(stream);
         
         toast({
-          title: 'Incoming Call',
-          description: 'Click "Join Meeting" to answer the call',
+          title: 'Connected!',
+          description: `Connected to ${incomingCall.peer.substring(0, 8)}`,
         });
-      }
+      });
+      
+      incomingCall.on('close', () => {
+        console.log('❌ Call ended');
+        handleCallEnd();
+      });
+      
+      callRef.current = incomingCall;
     });
 
     peer.on('error', (err) => {
       console.error('❌ Peer error:', err);
-      const errorMessage = err.type === 'peer-unavailable' 
-        ? 'The peer you are trying to connect to is not available. Make sure they are online.' 
-        : err.type === 'network'
-        ? 'Network error. Check your internet connection.'
-        : 'Failed to establish peer connection. Please try again.';
-      
-      toast({
-        title: 'Connection Error',
-        description: errorMessage,
-        variant: 'destructive'
-      });
       setIsConnecting(false);
-    });
-
-    peer.on('disconnected', () => {
-      console.log('⚠️ Peer disconnected, attempting to reconnect...');
-      setTimeout(() => {
-        if (peer.disconnected && !peer.destroyed) {
-          peer.reconnect();
-        }
-      }, 2000);
+      
+      if (err.type === 'peer-unavailable') {
+        toast({
+          title: 'Peer Unavailable',
+          description: 'The person you are trying to connect to is not online.',
+          variant: 'destructive'
+        });
+      }
     });
 
     peerRef.current = peer;
 
     return () => {
-      console.log('Destroying peer connection...');
+      console.log('🧹 Cleaning up peer...');
       if (peer && !peer.destroyed) {
         peer.destroy();
       }
     };
   }, []);
 
-  // Effect to attach local stream to video element
+  // Effect to attach local stream to video
   useEffect(() => {
     if (videoRef.current && localStream) {
-      console.log('Attaching local stream to video element...');
       videoRef.current.srcObject = localStream;
-      videoRef.current.muted = true;
-      
-      const playVideo = async () => {
-        try {
-          await videoRef.current?.play();
-          console.log('✅ Local video playing successfully');
-        } catch (err) {
-          console.error('Error playing local video:', err);
-          // Retry after a short delay
-          setTimeout(() => {
-            videoRef.current?.play().catch(e => console.error('Video play retry failed:', e));
-          }, 500);
-        }
-      };
-      
-      playVideo();
     }
   }, [localStream]);
 
-  // Effect to answer pending calls when localStream becomes available
+  // Effect to attach remote stream to video
   useEffect(() => {
-    if (localStream && pendingCallsRef.current.size > 0) {
-      console.log('✅ Local stream ready, answering', pendingCallsRef.current.size, 'pending call(s)');
-      
-      pendingCallsRef.current.forEach((call, peerId) => {
-        console.log('Answering pending call from:', peerId);
-        
-        // Prevent self-calls
-        if (peerId === myPeerId) {
-          console.warn('⚠️ Ignoring pending self-call from:', peerId);
-          pendingCallsRef.current.delete(peerId);
-          return;
-        }
-        
-        // Check if already connected
-        if (connectionsRef.current.has(peerId)) {
-          console.log('⚠️ Already connected to:', peerId);
-          pendingCallsRef.current.delete(peerId);
-          return;
-        }
-        
-        call.answer(localStream);
-        
-        call.on('stream', (remoteStream) => {
-          console.log('✅ Received remote stream from pending call:', peerId);
-          addRemoteParticipant(peerId, remoteStream);
-          setActivePeers(prev => new Set(prev).add(peerId));
-          
-          toast({
-            title: 'Connected',
-            description: `Connected to ${peerId.substring(0, 8)}`,
-          });
-        });
-
-        call.on('close', () => {
-          console.log('Call closed with:', peerId);
-          removeRemoteParticipant(peerId);
-          setActivePeers(prev => {
-            const newSet = new Set(prev);
-            newSet.delete(peerId);
-            return newSet;
-          });
-        });
-
-        call.on('error', (err) => {
-          console.error('Pending call error with:', peerId, err);
-          toast({
-            title: 'Connection Error',
-            description: `Failed to connect with ${peerId.substring(0, 8)}`,
-            variant: 'destructive'
-          });
-        });
-
-        connectionsRef.current.set(peerId, call);
-      });
-      
-      pendingCallsRef.current.clear();
+    if (remoteVideoRef.current && remoteStream) {
+      console.log('🎥 Attaching remote stream to video element');
+      remoteVideoRef.current.srcObject = remoteStream;
+      remoteVideoRef.current.play().catch(e => console.error('Error playing remote video:', e));
     }
-  }, [localStream]);
+  }, [remoteStream]);
 
-  // Separate effect to handle call initiation when localStream is ready
+  // Effect to initiate call when conditions are met
   useEffect(() => {
-    // Only attempt to connect if there's a roomId, it's different from our own, and it's not empty
-    if (localStream && roomId && roomId.trim() && isInMeeting && isPeerReady) {
-      // Validate that we're not trying to call ourselves
-      if (roomId === myPeerId) {
-        console.log('⚠️ Not connecting: Room ID matches own Peer ID');
-        toast({
-          title: 'Invalid Room ID',
-          description: 'You cannot use your own Peer ID as the Room ID. Share your link with others to invite them.',
-          variant: 'destructive'
-        });
-        return;
-      }
-      
-      console.log('🔄 Conditions met for calling peer:', { 
-        hasLocalStream: !!localStream, 
-        roomId, 
-        myPeerId,
-        isInMeeting,
-        isPeerReady,
-        videoTracks: localStream.getVideoTracks().length,
-        audioTracks: localStream.getAudioTracks().length
-      });
-      
-      // Don't call if already connected
-      if (!connectionsRef.current.has(roomId)) {
-        const timer = setTimeout(() => {
-          console.log('📞 Initiating call to peer:', roomId);
-          callPeer(roomId);
-        }, 1500);
-        return () => clearTimeout(timer);
-      } else {
-        console.log('✅ Already connected to:', roomId);
-      }
-    } else if (isInMeeting && !roomId) {
-      // Creating a new meeting - just wait for others to join
-      console.log('📝 Creating new meeting, waiting for others to call...');
-    } else if (isInMeeting && roomId && roomId.trim() && !localStream) {
-      console.log('⏳ Waiting for local stream before connecting to peer...');
+    if (localStream && roomId && roomId.trim() && !isConnected && !isConnecting && isPeerReady) {
+      console.log('📞 Initiating call to:', roomId);
+      callPeer(roomId);
     }
-  }, [localStream, roomId, myPeerId, isInMeeting, isPeerReady]);
+  }, [localStream, roomId, isConnected, isConnecting, isPeerReady]);
 
-  function addRemoteParticipant(peerId: string, stream: MediaStream) {
-    setParticipants(prev => {
-      const exists = prev.find(p => p.id === peerId);
-      if (exists) return prev;
-      
-      // Start transcribing remote audio
-      startRemoteTranscription(peerId, stream);
-      
-      return [...prev, {
-        id: peerId,
-        name: `User ${peerId.substring(0, 6)}`,
-        isSpeaking: false,
-        isVideoOn: stream.getVideoTracks().length > 0 && stream.getVideoTracks()[0].enabled,
-        isAudioOn: stream.getAudioTracks().length > 0 && stream.getAudioTracks()[0].enabled,
-        stream
-      }];
-    });
-  }
-
-  function startRemoteTranscription(peerId: string, stream: MediaStream) {
+  function startRemoteTranscription(stream: MediaStream) {
     try {
       const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
       
       if (!SpeechRecognition) {
-        console.warn('Speech recognition not supported for remote stream');
+        console.warn('⚠️ Speech recognition not supported');
         return;
       }
 
-      // Create audio context to process remote stream
       const audioContext = new AudioContext();
       const source = audioContext.createMediaStreamSource(stream);
       const destination = audioContext.createMediaStreamDestination();
       source.connect(destination);
 
-      // Create speech recognition for remote audio
       const recognition = new SpeechRecognition();
       recognition.continuous = true;
       recognition.interimResults = true;
@@ -413,95 +215,70 @@ export default function LiveMeeting() {
         let finalTranscript = '';
         
         for (let i = event.resultIndex; i < event.results.length; i++) {
-          const transcript = event.results[i][0].transcript;
           if (event.results[i].isFinal) {
-            finalTranscript += transcript + ' ';
+            finalTranscript += event.results[i][0].transcript + ' ';
           }
         }
 
-        if (finalTranscript) {
+        if (finalTranscript.trim()) {
           const newItem: TranscriptItem = {
-            id: `remote-${peerId}-${Date.now()}`,
-            speaker: 'ai', // Using 'ai' to differentiate from 'user'
-            text: `${peerId.substring(0, 6)}: ${finalTranscript.trim()}`,
+            id: `remote-${Date.now()}`,
+            speaker: 'ai',
+            text: `Friend: ${finalTranscript.trim()}`,
             timestamp: new Date(),
           };
-          
-          const feedback = analyzeGrammar(finalTranscript);
-          if (feedback) {
-            newItem.grammarCorrection = feedback.corrected;
-          }
-          
           setTranscript(prev => [...prev, newItem]);
         }
       };
 
       recognition.onerror = (event: any) => {
-        console.error('Remote speech recognition error:', event.error);
+        console.error('Remote recognition error:', event.error);
       };
 
       recognition.onend = () => {
-        // Restart if participant still connected
-        if (remoteRecognitionRef.current.has(peerId)) {
+        if (isConnected) {
           setTimeout(() => {
             try {
               recognition.start();
-            } catch (e) {
-              console.error('Failed to restart remote recognition:', e);
-            }
+            } catch (e) {}
           }, 100);
         }
       };
 
-      // Start recognition
-      try {
-        recognition.start();
-        remoteRecognitionRef.current.set(peerId, recognition);
-        setRemoteAudioContexts(prev => new Map(prev).set(peerId, audioContext));
-        console.log('✅ Remote transcription started for:', peerId);
-      } catch (e) {
-        console.error('Failed to start remote recognition:', e);
-      }
+      recognition.start();
+      remoteRecognitionRef.current = recognition;
+      remoteAudioContextRef.current = audioContext;
+      console.log('✅ Remote transcription started');
     } catch (error) {
       console.error('Error setting up remote transcription:', error);
     }
   }
 
-  function removeRemoteParticipant(peerId: string) {
-    // Stop remote transcription
-    const recognition = remoteRecognitionRef.current.get(peerId);
-    if (recognition) {
-      try {
-        recognition.stop();
-        remoteRecognitionRef.current.delete(peerId);
-      } catch (e) {
-        console.error('Error stopping remote recognition:', e);
-      }
-    }
-
-    // Close audio context
-    const audioContext = remoteAudioContexts.get(peerId);
-    if (audioContext) {
-      try {
-        audioContext.close();
-        setRemoteAudioContexts(prev => {
-          const newMap = new Map(prev);
-          newMap.delete(peerId);
-          return newMap;
-        });
-      } catch (e) {
-        console.error('Error closing audio context:', e);
-      }
-    }
-
-    setParticipants(prev => prev.filter(p => p.id !== peerId));
-    remoteVideoRefs.current.delete(peerId);
+  function handleCallEnd() {
+    console.log('📴 Handling call end');
     
-    const connection = connectionsRef.current.get(peerId);
-    if (connection) {
-      connection.close();
-      connectionsRef.current.delete(peerId);
+    if (remoteRecognitionRef.current) {
+      try {
+        remoteRecognitionRef.current.stop();
+      } catch (e) {}
+      remoteRecognitionRef.current = null;
     }
+    
+    if (remoteAudioContextRef.current) {
+      try {
+        remoteAudioContextRef.current.close();
+      } catch (e) {}
+      remoteAudioContextRef.current = null;
+    }
+    
+    setRemoteStream(null);
+    setRemotePeerId('');
+    setIsConnected(false);
+    
+    toast({
+      title: 'Call Ended',
+      description: 'The other person has left the meeting',
+    });
   }
 
   async function joinMeeting() {
@@ -591,171 +368,106 @@ export default function LiveMeeting() {
     }
   }
 
-  function callPeer(remotePeerId: string) {
+  function callPeer(targetPeerId: string) {
     if (!peerRef.current || !localStream) {
-      console.error('❌ Peer or local stream not ready');
-      toast({
-        title: 'Not Ready',
-        description: 'Peer connection or local stream not ready. Please try again.',
-        variant: 'destructive'
-      });
+      console.error('❌ Cannot call: Peer or stream not ready');
       return;
     }
 
-    if (remotePeerId === myPeerId) {
+    if (targetPeerId === myPeerId) {
       console.error('❌ Cannot call yourself');
-      toast({
-        title: 'Invalid Room ID',
-        description: 'You cannot call yourself. Share your link with others to invite them.',
-        variant: 'destructive'
-      });
-      return;
-    }
-    
-    if (!remotePeerId || !remotePeerId.trim()) {
-      console.error('❌ Invalid peer ID');
       return;
     }
 
-    // Check if already connected
-    if (connectionsRef.current.has(remotePeerId)) {
-      console.log('⚠️ Already connected to:', remotePeerId);
-      return;
-    }
-
-    console.log('📞 Calling peer:', remotePeerId);
-    console.log('📤 Sending stream with tracks:', {
-      video: localStream.getVideoTracks().length,
-      audio: localStream.getAudioTracks().length
-    });
-    
+    console.log('📞 Calling:', targetPeerId);
     setIsConnecting(true);
     
-    try {
-      const call = peerRef.current.call(remotePeerId, localStream);
-      
-      if (!call) {
-        console.error('❌ Failed to create call object');
-        setIsConnecting(false);
-        return;
-      }
-
-      // Add timeout for connection
-      const connectionTimeout = setTimeout(() => {
-        if (isConnecting) {
-          console.error('❌ Connection timeout');
-          setIsConnecting(false);
-          toast({
-            title: 'Connection Timeout',
-            description: 'Could not connect to peer. They may not be online.',
-            variant: 'destructive'
-          });
-          call.close();
-        }
-      }, 15000); // 15 second timeout
-      
-      call.on('stream', (remoteStream) => {
-        clearTimeout(connectionTimeout);
-        console.log('✅ Received stream from:', remotePeerId);
-        console.log('📥 Remote stream tracks:', {
-          video: remoteStream.getVideoTracks().length,
-          audio: remoteStream.getAudioTracks().length
-        });
-        addRemoteParticipant(remotePeerId, remoteStream);
-        setActivePeers(prev => new Set(prev).add(remotePeerId));
-        setIsConnecting(false);
-        
-        toast({
-          title: 'Connected!',
-          description: `Successfully connected to ${remotePeerId.substring(0, 8)}`,
-        });
-      });
-
-      call.on('close', () => {
-        clearTimeout(connectionTimeout);
-        console.log('❌ Call closed with:', remotePeerId);
-        removeRemoteParticipant(remotePeerId);
-        setActivePeers(prev => {
-          const newSet = new Set(prev);
-          newSet.delete(remotePeerId);
-          return newSet;
-        });
-      });
-
-      call.on('error', (err) => {
-        clearTimeout(connectionTimeout);
-        console.error('❌ Call error:', err);
-        setIsConnecting(false);
-        
-        toast({
-          title: 'Call Failed',
-          description: 'Could not connect. Make sure your friend has joined the meeting.',
-          variant: 'destructive'
-        });
-      });
-
-      connectionsRef.current.set(remotePeerId, call);
-    } catch (err) {
-      console.error('❌ Error initiating call:', err);
+    const call = peerRef.current.call(targetPeerId, localStream);
+    
+    const timeout = setTimeout(() => {
       setIsConnecting(false);
       toast({
-        title: 'Connection Error',
-        description: 'Failed to initiate call. Please try again.',
+        title: 'Connection Timeout',
+        description: 'Could not connect. Make sure your friend is online.',
         variant: 'destructive'
       });
-    }
+    }, 15000);
+    
+    call.on('stream', (stream) => {
+      clearTimeout(timeout);
+      console.log('✅ Connected!');
+      setRemoteStream(stream);
+      setRemotePeerId(targetPeerId);
+      setIsConnected(true);
+      setIsConnecting(false);
+      startRemoteTranscription(stream);
+      
+      toast({
+        title: 'Connected!',
+        description: 'You are now connected',
+      });
+    });
+    
+    call.on('close', () => {
+      clearTimeout(timeout);
+      handleCallEnd();
+    });
+    
+    call.on('error', (err) => {
+      clearTimeout(timeout);
+      console.error('Call error:', err);
+      setIsConnecting(false);
+      toast({
+        title: 'Connection Failed',
+        description: 'Could not connect to peer',
+        variant: 'destructive'
+      });
+    });
+    
+    callRef.current = call;
   }
 
   function leaveMeeting() {
-    console.log('Leaving meeting...');
-    setIsInMeeting(false);
+    console.log('👋 Leaving meeting...');
+    
+    // Stop speech recognition
     speechRecognition.stopListening();
     
-    // Stop all remote transcriptions
-    remoteRecognitionRef.current.forEach((recognition) => {
+    // Stop remote transcription
+    if (remoteRecognitionRef.current) {
       try {
-        recognition.stop();
-      } catch (e) {
-        console.error('Error stopping recognition:', e);
-      }
-    });
-    remoteRecognitionRef.current.clear();
-
-    // Close all audio contexts
-    remoteAudioContexts.forEach((context) => {
+        remoteRecognitionRef.current.stop();
+      } catch (e) {}
+      remoteRecognitionRef.current = null;
+    }
+    
+    if (remoteAudioContextRef.current) {
       try {
-        context.close();
-      } catch (e) {
-        console.error('Error closing audio context:', e);
-      }
-    });
-    setRemoteAudioContexts(new Map());
+        remoteAudioContextRef.current.close();
+      } catch (e) {}
+      remoteAudioContextRef.current = null;
+    }
     
-    // Close all peer connections
-    connectionsRef.current.forEach(conn => conn.close());
-    connectionsRef.current.clear();
-    
-    // Clear pending calls
-    pendingCallsRef.current.clear();
-    
-    // Clear active peers
-    setActivePeers(new Set());
+    // Close call
+    if (callRef.current) {
+      callRef.current.close();
+      callRef.current = null;
+    }
     
     // Stop local stream
     if (localStream) {
-      localStream.getTracks().forEach(track => {
-        track.stop();
-        console.log('Stopped track:', track.kind);
-      });
+      localStream.getTracks().forEach(track => track.stop());
       setLocalStream(null);
     }
     
-    if (videoRef.current) {
-      videoRef.current.srcObject = null;
-    }
-
-    setParticipants([]);
+    // Reset state
+    setRemoteStream(null);
+    setRemotePeerId('');
+    setIsInMeeting(false);
+    setIsConnected(false);
+    setIsConnecting(false);
     setRoomId('');
+    setTranscript([]);
   }
 
   function toggleVideo() {
@@ -843,67 +555,46 @@ export default function LiveMeeting() {
     }
   }
 
-  // Auto-fill room ID from URL on mount
+  // Auto-fill room ID from URL
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const room = params.get('room');
-    if (room && !isInMeeting && !roomId && myPeerId) {
-      // Don't auto-fill if the room ID is our own peer ID
-      if (room === myPeerId) {
-        console.warn('⚠️ URL room parameter matches own peer ID - ignoring');
-        // Clear the URL parameter
-        window.history.replaceState({}, '', window.location.pathname);
-        toast({
-          title: 'Invalid Room Link',
-          description: 'You cannot join your own meeting. Share this link with others.',
-          variant: 'destructive'
-        });
-        return;
-      }
-      
-      console.log('Room ID from URL:', room);
+    
+    if (room && !isInMeeting && !roomId) {
+      console.log('📋 Room ID from URL:', room);
       setRoomId(room);
-      
-      // Show toast to guide user to join
       toast({
         title: 'Room ID Detected',
-        description: 'Click "Join Meeting" to connect with your friend.',
+        description: 'Click "Join Meeting" to connect',
       });
     }
-  }, [isInMeeting, roomId, myPeerId]);
+  }, []);
 
   // Cleanup on unmount
   useEffect(() => {
     return () => {
       speechRecognition.stopListening();
       
-      // Stop all remote transcriptions
-      remoteRecognitionRef.current.forEach((recognition) => {
+      if (remoteRecognitionRef.current) {
         try {
-          recognition.stop();
+          remoteRecognitionRef.current.stop();
         } catch (e) {}
-      });
+      }
       
-      // Close all audio contexts
-      remoteAudioContexts.forEach((context) => {
+      if (remoteAudioContextRef.current) {
         try {
-          context.close();
+          remoteAudioContextRef.current.close();
         } catch (e) {}
-      });
+      }
       
-      // Close all connections
-      connectionsRef.current.forEach(conn => {
-        try {
-          conn.close();
-        } catch (e) {}
-      });
-      
-      // Clear pending calls
-      pendingCallsRef.current.clear();
+      if (callRef.current) {
+        callRef.current.close();
+      }
       
       if (localStream) {
         localStream.getTracks().forEach(track => track.stop());
       }
+      
       if (peerRef.current) {
         peerRef.current.destroy();
       }
@@ -1056,14 +747,8 @@ export default function LiveMeeting() {
     <div className="h-full flex flex-col lg:flex-row gap-4 p-4">
       {/* Main Video Area */}
       <div className="flex-1 flex flex-col gap-4">
-        {/* Video Grid - Dynamic layout based on participant count */}
-        <div className={cn(
-          "grid gap-4 flex-1",
-          participants.length === 0 && "grid-cols-1 md:grid-cols-2",
-          participants.length === 1 && "grid-cols-1 md:grid-cols-2",
-          participants.length === 2 && "grid-cols-1 md:grid-cols-3",
-          participants.length >= 3 && "grid-cols-1 md:grid-cols-2 lg:grid-cols-3"
-        )}>
+        {/* Video Grid */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 flex-1">
           {/* User Video */}
           <div className="relative bg-gray-900 rounded-xl overflow-hidden aspect-video">
             <video
@@ -1121,169 +806,27 @@ export default function LiveMeeting() {
             </div>
           </div>
 
-          {/* Remote Participants */}
-          {participants.map((participant) => (
-            <div 
-              key={participant.id} 
-              className="relative bg-gray-900 rounded-xl overflow-hidden aspect-video"
-            >
+          {/* Remote Video (Friend) */}
+          {remoteStream ? (
+            <div className="relative bg-gray-900 rounded-xl overflow-hidden aspect-video">
               <video
-                key={`video-${participant.id}`}
-                ref={(el) => {
-                  if (el && participant.stream) {
-                    // Only set if different to avoid unnecessary updates
-                    if (el.srcObject !== participant.stream) {
-                      console.log('🎥 Attaching stream for participant:', participant.id);
-                      console.log('Stream active:', participant.stream.active);
-                      console.log('Stream tracks:', {
-                        video: participant.stream.getVideoTracks().length,
-                        audio: participant.stream.getAudioTracks().length,
-                        videoEnabled: participant.stream.getVideoTracks()[0]?.enabled,
-                        audioEnabled: participant.stream.getAudioTracks()[0]?.enabled,
-                        videoState: participant.stream.getVideoTracks()[0]?.readyState,
-                        audioState: participant.stream.getAudioTracks()[0]?.readyState
-                      });
-                      
-                      el.srcObject = participant.stream;
-                      el.muted = false;
-                      el.volume = 1.0;
-                      
-                      // Force video attributes for compatibility across all devices
-                      el.setAttribute('playsinline', 'true');
-                      el.setAttribute('autoplay', 'true');
-                      el.setAttribute('webkit-playsinline', 'true');
-                      
-                      // Ensure video tracks are enabled
-                      participant.stream.getVideoTracks().forEach(track => {
-                        console.log('Video track state:', track.id, track.readyState, track.enabled);
-                        if (!track.enabled) {
-                          console.warn('Video track is disabled, attempting to enable...');
-                          track.enabled = true;
-                        }
-                      });
-                      
-                      // Play video with comprehensive error handling and retries
-                      const playVideo = async () => {
-                        try {
-                          await el.play();
-                          console.log('✅ Remote video playing successfully:', participant.id);
-                        } catch (e: any) {
-                          console.error('❌ Error playing remote video:', participant.id, e);
-                          
-                          // Different strategies based on error type
-                          if (e.name === 'NotAllowedError') {
-                            console.log('⚠️ Autoplay blocked by browser policy, will retry with user interaction');
-                            // Clicking anywhere on the page should trigger play
-                            const clickHandler = async () => {
-                              try {
-                                await el.play();
-                                console.log('✅ Video playing after user interaction');
-                                document.removeEventListener('click', clickHandler);
-                              } catch (err) {
-                                console.error('Failed to play after click:', err);
-                              }
-                            };
-                            document.addEventListener('click', clickHandler);
-                          } else if (e.name === 'NotSupportedError') {
-                            console.error('❌ Video format not supported');
-                          } else {
-                            // Generic retry with progressive delays
-                            console.log('Attempting retry 1/3...');
-                            setTimeout(async () => {
-                              try {
-                                await el.play();
-                                console.log('✅ Retry 1 successful');
-                              } catch (retryErr) {
-                                console.error('❌ Retry 1 failed, attempting retry 2/3...');
-                                setTimeout(async () => {
-                                  try {
-                                    await el.play();
-                                    console.log('✅ Retry 2 successful');
-                                  } catch (finalErr) {
-                                    console.error('❌ Retry 2 failed, attempting final retry 3/3...');
-                                    setTimeout(async () => {
-                                      try {
-                                        await el.play();
-                                        console.log('✅ Final retry successful');
-                                      } catch (lastErr) {
-                                        console.error('❌ All retries exhausted:', lastErr);
-                                        // Check if stream is still active
-                                        if (!participant.stream.active) {
-                                          console.error('Stream is no longer active');
-                                        }
-                                      }
-                                    }, 3000);
-                                  }
-                                }, 2000);
-                              }
-                            }, 1000);
-                          }
-                        }
-                      };
-                      
-                      playVideo();
-                    }
-                    remoteVideoRefs.current.set(participant.id, el);
-                  }
-                }}
+                ref={remoteVideoRef}
                 autoPlay
                 playsInline
                 className="w-full h-full object-cover"
-                onLoadedMetadata={(e) => {
-                  const video = e.target as HTMLVideoElement;
-                  console.log('✅ Remote video metadata loaded:', participant.id, {
-                    duration: video.duration,
-                    videoWidth: video.videoWidth,
-                    videoHeight: video.videoHeight
-                  });
-                }}
-                onCanPlay={() => console.log('✅ Remote video can play:', participant.id)}
-                onPlaying={() => console.log('✅ Remote video is playing:', participant.id)}
-                onError={(e) => {
-                  const video = e.target as HTMLVideoElement;
-                  console.error('❌ Remote video error:', participant.id, {
-                    error: video.error,
-                    code: video.error?.code,
-                    message: video.error?.message
-                  });
-                }}
-                onStalled={() => console.warn('⚠️ Remote video stalled:', participant.id)}
-                onSuspend={() => console.warn('⚠️ Remote video suspended:', participant.id)}
-                onWaiting={() => console.log('⏳ Remote video waiting:', participant.id)}
               />
-              
-              {/* Show loading state if video not playing */}
-              {participant.stream && !participant.isVideoOn && (
-                <div className="absolute inset-0 flex items-center justify-center bg-gray-800">
-                  <div className="w-20 h-20 rounded-full bg-primary flex items-center justify-center">
-                    <span className="text-2xl font-bold text-primary-foreground">
-                      {participant.name.substring(0, 2).toUpperCase()}
-                    </span>
-                  </div>
-                </div>
-              )}
-              
-              <div className="absolute bottom-4 left-4 flex items-center gap-2">
+              <div className="absolute bottom-4 left-4">
                 <span className="bg-black/50 text-white px-2 py-1 rounded text-sm">
-                  {participant.name}
+                  Friend
                 </span>
-                {!participant.isAudioOn && (
-                  <MicOff className="h-4 w-4 text-red-500" />
-                )}
-                {!participant.isVideoOn && (
-                  <VideoOff className="h-4 w-4 text-red-500" />
-                )}
               </div>
             </div>
-          ))}
-
-          {/* Placeholder if no remote participants */}
-          {participants.length === 0 && (
+          ) : (
             <div className="relative bg-gray-800 rounded-xl overflow-hidden aspect-video flex items-center justify-center">
               <div className="text-center space-y-3 p-6">
                 <Users className="h-12 w-12 text-muted-foreground mx-auto" />
                 <p className="text-sm text-muted-foreground">
-                  {isConnecting ? 'Connecting to peer...' : 'Waiting for others to join...'}
+                  {isConnecting ? 'Connecting...' : 'Waiting for friend to join...'}
                 </p>
                 <div className="flex gap-2 justify-center">
                   <Button size="sm" variant="outline" onClick={copyRoomLink}>
@@ -1389,7 +932,7 @@ export default function LiveMeeting() {
           <div className="border-l pl-4 ml-4">
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
               <Users className="h-4 w-4" />
-              <span>{participants.length + 1} participant{participants.length !== 0 ? 's' : ''}</span>
+              <span>{isConnected ? '2' : '1'} participant{isConnected ? 's' : ''}</span>
             </div>
           </div>
         </div>
