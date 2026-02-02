@@ -81,12 +81,26 @@ export function useSpeechRecognition({
   }, [continuous, interimResults, lang]);
 
   const startListening = () => {
-    if (recognitionRef.current && !isListening) {
-      try {
-        recognitionRef.current.start();
+    if (!recognitionRef.current) {
+      console.warn('⚠️ Speech recognition not available');
+      return;
+    }
+    
+    if (isListening) {
+      console.log('⚠️ Speech recognition already running');
+      return;
+    }
+    
+    try {
+      recognitionRef.current.start();
+      setIsListening(true);
+      console.log('🎤 Speech recognition started');
+    } catch (error: any) {
+      // Handle "already started" error gracefully
+      if (error.message && error.message.includes('already started')) {
+        console.log('🎤 Speech recognition already active');
         setIsListening(true);
-        console.log('🎤 Speech recognition started');
-      } catch (error) {
+      } else {
         console.error('Error starting speech recognition:', error);
       }
     }

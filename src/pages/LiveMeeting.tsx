@@ -98,23 +98,25 @@ export default function LiveMeeting() {
   // Initialize PeerJS
   useEffect(() => {
     console.log('🔧 Initializing PeerJS...');
-    const peer = new Peer({
-      config: {
-        iceServers: [
-          { urls: 'stun:stun.l.google.com:19302' },
-          { urls: 'stun:global.stun.twilio.com:3478' }
-        ]
-      }
-    });
+    
+    try {
+      const peer = new Peer({
+        config: {
+          iceServers: [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:global.stun.twilio.com:3478' }
+          ]
+        }
+      });
 
-    peer.on('open', (id) => {
-      console.log('✅ Peer Ready! My ID:', id);
-      setMyPeerId(id);
-      setIsPeerReady(true);
-    });
+      peer.on('open', (id) => {
+        console.log('✅ Peer Ready! My ID:', id);
+        setMyPeerId(id);
+        setIsPeerReady(true);
+      });
 
-    peer.on('call', (incomingCall) => {
-      console.log('📞 Incoming call from:', incomingCall.peer);
+      peer.on('call', (incomingCall) => {
+        console.log('📞 Incoming call from:', incomingCall.peer);
       
       // Store pending call if we don't have local stream yet
       if (!localStream) {
@@ -174,14 +176,20 @@ export default function LiveMeeting() {
 
     peerRef.current = peer;
 
-    return () => {
-      console.log('🧹 Cleaning up peer...');
-      if (peer && !peer.destroyed) {
-        peer.destroy();
-      }
-    };
-  }, []);
-
+      return () => {
+        console.log('🧹 Cleaning up peer...');
+        if (peer && !peer.destroyed) {
+          peer.destroy();
+        }
+      };
+    } catch (error) {
+      console.error('❌ Failed to initialize PeerJS:', error);
+      toast({
+        title: 'Connection Error',
+        description: 'Failed to initialize peer connection. Please refresh the page.',
+        variant: 'destructive'
+      });
+    }
   // Effect to attach local stream to video
   useEffect(() => {
     if (videoRef.current && localStream) {
@@ -450,11 +458,20 @@ export default function LiveMeeting() {
       setLocalStream(stream);
       setIsInMeeting(true);
       setIsConnecting(false);
-      speechRecognition.startListening();
+      
+      // Start speech recognition (non-blocking)
+      try {
+        speechRecognition.startListening();
+        console.log('✅ Speech recognition started');
+      } catch (err) {
+        console.warn('⚠️ Speech recognition not available:', err);
+        // Continue without speech recognition
+      }
       
       // Clear roomId if creating new meeting (so we don't try to call ourselves)
       // Keep roomId only if we're joining someone
-      if (!roomId || roomId.trim() === '') {
+      const isCreatingNewMeeting = !roomId || roomId.trim() === '';
+      if (isCreatingNewMeeting) {
         console.log('📝 Creating new meeting - clearing roomId');
         setRoomId(''); // Clear to prevent auto-call
       } else {
@@ -464,14 +481,14 @@ export default function LiveMeeting() {
       const welcomeItem: TranscriptItem = {
         id: 'system-welcome',
         speaker: 'ai',
-        text: roomId ? 'Meeting started. Connecting to your friend...' : 'Meeting started. Live transcription is active. Share your room link to invite others.',
+        text: isCreatingNewMeeting ? 'Meeting started. Live transcription is active. Share your room link to invite others.' : 'Meeting started. Connecting to your friend...',
         timestamp: new Date(),
       };
       setTranscript([welcomeItem]);
 
       toast({
-        title: 'Joined Meeting',
-        description: roomId ? 'Connecting to friend...' : 'You can now share the room link with others.',
+        title: 'Meeting Started',
+        description: isCreatingNewMeeting ? 'You can now share the room link with others.' : 'Connecting to friend...',
       });
 
     } catch (err) {
