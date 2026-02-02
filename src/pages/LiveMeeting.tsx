@@ -39,11 +39,13 @@ export default function LiveMeeting() {
   const [isConnecting, setIsConnecting] = useState(false);
   const [isPeerReady, setIsPeerReady] = useState(false);
   const [pendingCall, setPendingCall] = useState<MediaConnection | null>(null);
+  const [remoteAudioContexts, setRemoteAudioContexts] = useState<Map<string, AudioContext>>(new Map());
   
   const videoRef = useRef<HTMLVideoElement>(null);
   const peerRef = useRef<Peer | null>(null);
   const connectionsRef = useRef<Map<string, MediaConnection>>(new Map());
   const remoteVideoRefs = useRef<Map<string, HTMLVideoElement>>(new Map());
+  const remoteRecognitionRef = useRef<Map<string, any>>(new Map());
 
   const speechRecognition = useSpeechRecognition({
     onResult: handleSpeechResult,
@@ -77,7 +79,7 @@ export default function LiveMeeting() {
     const newItem: TranscriptItem = {
       id: `user-${Date.now()}`,
       speaker: 'user',
-      text,
+      text: `You: ${text}`,
       timestamp: new Date(),
     };
     
@@ -294,6 +296,9 @@ export default function LiveMeeting() {
       const exists = prev.find(p => p.id === peerId);
       if (exists) return prev;
       
+      // Start transcribing remote audio
+      startRemoteTranscription(peerId, stream);
+      
       return [...prev, {
         id: peerId,
         name: `User ${peerId.substring(0, 6)}`,
@@ -305,7 +310,112 @@ export default function LiveMeeting() {
     });
   }
 
+  function startRemoteTranscription(peerId: string, stream: MediaStream) {
+    try {
+      const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+      
+      if (!SpeechRecognition) {
+        console.warn('Speech recognition not supported for remote stream');
+        return;
+      }
+
+      // Create audio context to process remote stream
+      const audioContext = new AudioContext();
+      const source = audioContext.createMediaStreamSource(stream);
+      const destination = audioContext.createMediaStreamDestination();
+      source.connect(destination);
+
+      // Create speech recognition for remote audio
+      const recognition = new SpeechRecognition();
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.lang = 'en-US';
+
+      recognition.onresult = (event: any) => {
+        let finalTranscript = '';
+        
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          const transcript = event.results[i][0].transcript;
+          if (event.results[i].isFinal) {
+            finalTranscript += transcript + ' ';
+          }
+        }
+
+        if (finalTranscript) {
+          const newItem: TranscriptItem = {
+            id: `remote-${peerId}-${Date.now()}`,
+            speaker: 'ai', // Using 'ai' to differentiate from 'user'
+            text: `${peerId.substring(0, 6)}: ${finalTranscript.trim()}`,
+            timestamp: new Date(),
+          };
+          
+          const feedback = analyzeGrammar(finalTranscript);
+          if (feedback) {
+            newItem.grammarCorrection = feedback.corrected;
+          }
+          
+          setTranscript(prev => [...prev, newItem]);
+        }
+      };
+
+      recognition.onerror = (event: any) => {
+        console.error('Remote speech recognition error:', event.error);
+      };
+
+      recognition.onend = () => {
+        // Restart if participant still connected
+        if (remoteRecognitionRef.current.has(peerId)) {
+          setTimeout(() => {
+            try {
+              recognition.start();
+            } catch (e) {
+              console.error('Failed to restart remote recognition:', e);
+            }
+          }, 100);
+        }
+      };
+
+      // Start recognition
+      try {
+        recognition.start();
+        remoteRecognitionRef.current.set(peerId, recognition);
+        setRemoteAudioContexts(prev => new Map(prev).set(peerId, audioContext));
+        console.log('✅ Remote transcription started for:', peerId);
+      } catch (e) {
+        console.error('Failed to start remote recognition:', e);
+      }
+    } catch (error) {
+      console.error('Error setting up remote transcription:', error);
+    }
+  }
+
   function removeRemoteParticipant(peerId: string) {
+    // Stop remote transcription
+    const recognition = remoteRecognitionRef.current.get(peerId);
+    if (recognition) {
+      try {
+        recognition.stop();
+        remoteRecognitionRef.current.delete(peerId);
+      } catch (e) {
+        console.error('Error stopping remote recognition:', e);
+      }
+    }
+
+    // Close audio context
+    const audioContext = remoteAudioContexts.get(peerId);
+    if (audioContext) {
+      try {
+        audioContext.close();
+        setRemoteAudioContexts(prev => {
+          const newMap = new Map(prev);
+          newMap.delete(peerId);
+          return newMap;
+        });
+      } catch (e) {
+        console.error('Error closing audio context:', e);
+      }
+    }
+
     setParticipants(prev => prev.filter(p => p.id !== peerId));
     remoteVideoRefs.current.delete(peerId);
     
@@ -512,6 +622,26 @@ export default function LiveMeeting() {
     setIsInMeeting(false);
     speechRecognition.stopListening();
     
+    // Stop all remote transcriptions
+    remoteRecognitionRef.current.forEach((recognition) => {
+      try {
+        recognition.stop();
+      } catch (e) {
+        console.error('Error stopping recognition:', e);
+      }
+    });
+    remoteRecognitionRef.current.clear();
+
+    // Close all audio contexts
+    remoteAudioContexts.forEach((context) => {
+      try {
+        context.close();
+      } catch (e) {
+        console.error('Error closing audio context:', e);
+      }
+    });
+    setRemoteAudioContexts(new Map());
+    
     // Close all peer connections
     connectionsRef.current.forEach(conn => conn.close());
     connectionsRef.current.clear();
@@ -638,6 +768,21 @@ export default function LiveMeeting() {
   useEffect(() => {
     return () => {
       speechRecognition.stopListening();
+      
+      // Stop all remote transcriptions
+      remoteRecognitionRef.current.forEach((recognition) => {
+        try {
+          recognition.stop();
+        } catch (e) {}
+      });
+      
+      // Close all audio contexts
+      remoteAudioContexts.forEach((context) => {
+        try {
+          context.close();
+        } catch (e) {}
+      });
+      
       if (localStream) {
         localStream.getTracks().forEach(track => track.stop());
       }
@@ -859,29 +1004,63 @@ export default function LiveMeeting() {
               className="relative bg-gray-900 rounded-xl overflow-hidden aspect-video"
             >
               <video
+                key={`video-${participant.id}`}
                 ref={(el) => {
                   if (el && participant.stream) {
                     // Only set if different to avoid unnecessary updates
                     if (el.srcObject !== participant.stream) {
+                      console.log('🎥 Attaching stream for participant:', participant.id);
+                      console.log('Stream tracks:', {
+                        video: participant.stream.getVideoTracks().length,
+                        audio: participant.stream.getAudioTracks().length,
+                        videoEnabled: participant.stream.getVideoTracks()[0]?.enabled,
+                        audioEnabled: participant.stream.getAudioTracks()[0]?.enabled
+                      });
+                      
                       el.srcObject = participant.stream;
                       el.muted = false;
-                      console.log('Setting stream for participant:', participant.id);
+                      el.volume = 1.0;
+                      
+                      // Force video attributes for compatibility
+                      el.setAttribute('playsinline', 'true');
+                      el.setAttribute('autoplay', 'true');
                       
                       // Play video with proper error handling
-                      const playPromise = el.play();
-                      if (playPromise !== undefined) {
-                        playPromise
-                          .then(() => console.log('Remote video playing:', participant.id))
-                          .catch(e => {
-                            console.error('Error playing remote video:', e);
-                            // Retry
-                            setTimeout(() => {
-                              if (el && el.srcObject === participant.stream) {
-                                el.play().catch(err => console.error('Retry failed:', err));
+                      const playVideo = async () => {
+                        try {
+                          await el.play();
+                          console.log('✅ Remote video playing:', participant.id);
+                        } catch (e: any) {
+                          console.error('❌ Error playing remote video:', e);
+                          
+                          // Try multiple retry strategies
+                          if (e.name === 'NotAllowedError') {
+                            console.log('⚠️ Autoplay blocked, waiting for user interaction');
+                            // User interaction will trigger play
+                          } else {
+                            // Retry with delays
+                            setTimeout(async () => {
+                              try {
+                                await el.play();
+                                console.log('✅ Retry successful');
+                              } catch (retryErr) {
+                                console.error('❌ Retry failed:', retryErr);
+                                // Final retry after longer delay
+                                setTimeout(async () => {
+                                  try {
+                                    await el.play();
+                                    console.log('✅ Final retry successful');
+                                  } catch (finalErr) {
+                                    console.error('❌ All retries failed:', finalErr);
+                                  }
+                                }, 2000);
                               }
-                            }, 500);
-                          });
-                      }
+                            }, 1000);
+                          }
+                        }
+                      };
+                      
+                      playVideo();
                     }
                     remoteVideoRefs.current.set(participant.id, el);
                   }
@@ -889,6 +1068,10 @@ export default function LiveMeeting() {
                 autoPlay
                 playsInline
                 className="w-full h-full object-cover"
+                onLoadedMetadata={() => console.log('✅ Remote video metadata loaded:', participant.id)}
+                onCanPlay={() => console.log('✅ Remote video can play:', participant.id)}
+                onPlaying={() => console.log('✅ Remote video playing:', participant.id)}
+                onError={(e) => console.error('❌ Remote video error:', participant.id, e)}
               />
               <div className="absolute bottom-4 left-4 flex items-center gap-2">
                 <span className="bg-black/50 text-white px-2 py-1 rounded text-sm">
