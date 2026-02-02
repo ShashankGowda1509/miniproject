@@ -48,6 +48,7 @@ export default function LiveMeeting() {
   const remoteRecognitionRef = useRef<any>(null);
   const remoteAudioContextRef = useRef<AudioContext | null>(null);
   const autoJoinInitiatedRef = useRef(false);
+  const pendingIncomingCallRef = useRef<MediaConnection | null>(null);
 
   const speechRecognition = useSpeechRecognition({
     onResult: handleSpeechResult,
@@ -115,17 +116,25 @@ export default function LiveMeeting() {
     peer.on('call', (incomingCall) => {
       console.log('📞 Incoming call from:', incomingCall.peer);
       
-      // Only accept call if we have local stream
+      // Store pending call if we don't have local stream yet
       if (!localStream) {
-        console.log('⏳ No local stream, waiting...');
+        console.log('⏳ No local stream yet, storing pending call...');
+        pendingIncomingCallRef.current = incomingCall;
+        
+        // Auto-join to get camera access
+        if (!isInMeeting && !autoJoinInitiatedRef.current) {
+          console.log('🚀 Auto-starting meeting to answer call...');
+          autoJoinInitiatedRef.current = true;
+          setTimeout(() => startMeeting(), 100);
+        }
         return;
       }
       
-      console.log('✅ Answering call...');
+      console.log('✅ Answering call with local stream...');
       incomingCall.answer(localStream);
       
       incomingCall.on('stream', (stream) => {
-        console.log('✅ Received remote stream');
+        console.log('✅ Received remote stream from incoming call');
         setRemoteStream(stream);
         setRemotePeerId(incomingCall.peer);
         setIsConnected(true);
@@ -134,13 +143,17 @@ export default function LiveMeeting() {
         
         toast({
           title: 'Connected!',
-          description: `Connected to ${incomingCall.peer.substring(0, 8)}`,
+          description: `Connected to friend`,
         });
       });
       
       incomingCall.on('close', () => {
-        console.log('❌ Call ended');
+        console.log('❌ Incoming call ended');
         handleCallEnd();
+      });
+      
+      incomingCall.on('error', (err) => {
+        console.error('❌ Incoming call error:', err);
       });
       
       callRef.current = incomingCall;
@@ -185,10 +198,46 @@ export default function LiveMeeting() {
     }
   }, [remoteStream]);
 
-  // Effect to initiate call when conditions are met
+  // Effect to answer pending incoming call once local stream is ready
   useEffect(() => {
-    if (localStream && roomId && roomId.trim() && !isConnected && !isConnecting && isPeerReady) {
-      console.log('📞 Initiating call to:', roomId);
+    if (localStream && pendingIncomingCallRef.current && !isConnected) {
+      console.log('✅ Local stream ready! Answering pending call...');
+      const incomingCall = pendingIncomingCallRef.current;
+      pendingIncomingCallRef.current = null;
+      
+      incomingCall.answer(localStream);
+      
+      incomingCall.on('stream', (stream) => {
+        console.log('✅ Received remote stream from pending call');
+        setRemoteStream(stream);
+        setRemotePeerId(incomingCall.peer);
+        setIsConnected(true);
+        setIsConnecting(false);
+        startRemoteTranscription(stream);
+        
+        toast({
+          title: 'Connected!',
+          description: 'You are now connected to your friend',
+        });
+      });
+      
+      incomingCall.on('close', () => {
+        console.log('❌ Call ended');
+        handleCallEnd();
+      });
+      
+      incomingCall.on('error', (err) => {
+        console.error('❌ Call error:', err);
+      });
+      
+      callRef.current = incomingCall;
+    }
+  }, [localStream, isConnected]);
+  
+  // Effect to initiate outgoing call when conditions are met
+  useEffect(() => {
+    if (localStream && roomId && roomId.trim() && !isConnected && !isConnecting && isPeerReady && !pendingIncomingCallRef.current) {
+      console.log('📞 Initiating outgoing call to:', roomId);
       callPeer(roomId);
     }
   }, [localStream, roomId, isConnected, isConnecting, isPeerReady]);
@@ -625,23 +674,38 @@ export default function LiveMeeting() {
       
       toast({
         title: 'Room Detected',
-        description: 'Setting up connection...',
+        description: 'Connecting you to the meeting...',
       });
       
-      // Auto-join when peer is ready
+      // Wait for peer to be ready, then auto-join
       const checkAndJoin = setInterval(() => {
         if (isPeerReady && !isInMeeting && !localStream && !autoJoinInitiatedRef.current) {
-          console.log('🚀 Auto-joining meeting - all conditions met');
+          console.log('🚀 Auto-joining meeting - conditions met');
           autoJoinInitiatedRef.current = true;
           clearInterval(checkAndJoin);
-          setTimeout(() => startMeeting(), 300);
+          
+          // Small delay to ensure state is stable
+          setTimeout(() => {
+            console.log('▶️ Starting meeting now...');
+            startMeeting();
+          }, 200);
         }
       }, 100);
       
-      // Cleanup after 10 seconds
-      setTimeout(() => clearInterval(checkAndJoin), 10000);
+      // Cleanup after 15 seconds
+      setTimeout(() => {
+        clearInterval(checkAndJoin);
+        if (!isInMeeting && autoJoinInitiatedRef.current === false) {
+          console.log('⏱️ Auto-join timeout - please join manually');
+          toast({
+            title: 'Please Join Manually',
+            description: 'Auto-join timed out. Click "Join Meeting" button.',
+            variant: 'destructive'
+          });
+        }
+      }, 15000);
     }
-  }, []);
+  }, [isPeerReady, isInMeeting, localStream]);
 
   // Cleanup on unmount
   useEffect(() => {
