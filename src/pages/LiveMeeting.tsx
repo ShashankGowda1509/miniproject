@@ -117,6 +117,12 @@ export default function LiveMeeting() {
     peer.on('call', (call) => {
       console.log('📞 Receiving call from:', call.peer);
       
+      // Prevent self-calls
+      if (call.peer === peer.id) {
+        console.warn('⚠️ Ignoring self-call from:', call.peer);
+        return;
+      }
+      
       // If we have local stream, answer immediately
       if (localStream) {
         console.log('Answering call with local stream...');
@@ -246,6 +252,13 @@ export default function LiveMeeting() {
       pendingCallsRef.current.forEach((call, peerId) => {
         console.log('Answering pending call from:', peerId);
         
+        // Prevent self-calls
+        if (peerId === myPeerId) {
+          console.warn('⚠️ Ignoring pending self-call from:', peerId);
+          pendingCallsRef.current.delete(peerId);
+          return;
+        }
+        
         // Check if already connected
         if (connectionsRef.current.has(peerId)) {
           console.log('⚠️ Already connected to:', peerId);
@@ -294,8 +307,19 @@ export default function LiveMeeting() {
 
   // Separate effect to handle call initiation when localStream is ready
   useEffect(() => {
-    // Only attempt to connect if there's a roomId and it's different from our own
-    if (localStream && roomId && roomId.trim() && roomId !== myPeerId && isInMeeting && isPeerReady) {
+    // Only attempt to connect if there's a roomId, it's different from our own, and it's not empty
+    if (localStream && roomId && roomId.trim() && isInMeeting && isPeerReady) {
+      // Validate that we're not trying to call ourselves
+      if (roomId === myPeerId) {
+        console.log('⚠️ Not connecting: Room ID matches own Peer ID');
+        toast({
+          title: 'Invalid Room ID',
+          description: 'You cannot use your own Peer ID as the Room ID. Share your link with others to invite them.',
+          variant: 'destructive'
+        });
+        return;
+      }
+      
       console.log('🔄 Conditions met for calling peer:', { 
         hasLocalStream: !!localStream, 
         roomId, 
@@ -316,15 +340,9 @@ export default function LiveMeeting() {
       } else {
         console.log('✅ Already connected to:', roomId);
       }
-    } else if (isInMeeting && roomId && roomId.trim() && localStream && isPeerReady) {
-      if (roomId === myPeerId) {
-        console.log('⚠️ Not connecting: Cannot call yourself');
-        toast({
-          title: 'Invalid Room ID',
-          description: 'You cannot use your own Peer ID as the Room ID.',
-          variant: 'destructive'
-        });
-      }
+    } else if (isInMeeting && !roomId) {
+      // Creating a new meeting - just wait for others to join
+      console.log('📝 Creating new meeting, waiting for others to call...');
     } else if (isInMeeting && roomId && roomId.trim() && !localStream) {
       console.log('⏳ Waiting for local stream before connecting to peer...');
     }
@@ -567,9 +585,14 @@ export default function LiveMeeting() {
       console.error('❌ Cannot call yourself');
       toast({
         title: 'Invalid Room ID',
-        description: 'You cannot call yourself. Please enter a different Room ID.',
+        description: 'You cannot call yourself. Share your link with others to invite them.',
         variant: 'destructive'
       });
+      return;
+    }
+    
+    if (!remotePeerId || !remotePeerId.trim()) {
+      console.error('❌ Invalid peer ID');
       return;
     }
 
