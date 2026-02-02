@@ -67,6 +67,7 @@ const App = () => (
             <Route path="/" element={<Navigate to="/login" replace />} />
             <Route path="/login" element={<PublicRoute><Login /></PublicRoute>} />
             <Route path="/signup" element={<PublicRoute><Signup /></PublicRoute>} />
+            <Route path="/live-meeting" element={<LiveMeeting />} />
             
             {/* Protected dashboard routes */}
             <Route path="/dashboard" element={
