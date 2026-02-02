@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Interview AI Coach</title>
+  <script>
+    // Redirect all 404s to index.html with the path preserved
+    (function() {
+      var redirect = sessionStorage.redirect;
+      delete sessionStorage.redirect;
+      if (redirect && redirect !== location.href) {
+        history.replaceState(null, null, redirect);
+      }
+    })();
+  </script>
+</head>
+<body>
+  <script>
+    // Store the current URL and redirect to root
+    sessionStorage.redirect = location.href;
+    location.replace('/');
+  </script>
+</body>
+</html>
