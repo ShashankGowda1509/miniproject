@@ -112,14 +112,35 @@ export default function LiveMeeting() {
       setMyPeerId(id);
       setIsPeerReady(true);
       setIsConnecting(false);
+      
+      // Check if URL has a room parameter that matches our own ID (shouldn't happen)
+      const params = new URLSearchParams(window.location.search);
+      const urlRoom = params.get('room');
+      if (urlRoom && urlRoom === id) {
+        console.warn('⚠️ URL room parameter matches own peer ID - clearing it');
+        window.history.replaceState({}, '', window.location.pathname);
+      }
     });
 
     peer.on('call', (call) => {
       console.log('📞 Receiving call from:', call.peer);
+      console.log('Current state:', {
+        myPeerId: peer.id,
+        isInMeeting,
+        hasLocalStream: !!localStream,
+        currentRoomId: roomId,
+        isPeerReady
+      });
       
       // Prevent self-calls
       if (call.peer === peer.id) {
-        console.warn('⚠️ Ignoring self-call from:', call.peer);
+        console.error('❌ CRITICAL: Received self-call attempt! Peer ID:', call.peer);
+        toast({
+          title: 'Connection Error',
+          description: 'Cannot connect to yourself. This should not happen.',
+          variant: 'destructive'
+        });
+        call.close();
         return;
       }
       
@@ -826,7 +847,20 @@ export default function LiveMeeting() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const room = params.get('room');
-    if (room && !isInMeeting && !roomId) {
+    if (room && !isInMeeting && !roomId && myPeerId) {
+      // Don't auto-fill if the room ID is our own peer ID
+      if (room === myPeerId) {
+        console.warn('⚠️ URL room parameter matches own peer ID - ignoring');
+        // Clear the URL parameter
+        window.history.replaceState({}, '', window.location.pathname);
+        toast({
+          title: 'Invalid Room Link',
+          description: 'You cannot join your own meeting. Share this link with others.',
+          variant: 'destructive'
+        });
+        return;
+      }
+      
       console.log('Room ID from URL:', room);
       setRoomId(room);
       
@@ -836,7 +870,7 @@ export default function LiveMeeting() {
         description: 'Click "Join Meeting" to connect with your friend.',
       });
     }
-  }, [isInMeeting, roomId]);
+  }, [isInMeeting, roomId, myPeerId]);
 
   // Cleanup on unmount
   useEffect(() => {
