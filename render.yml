@@ -1,0 +1,10 @@
+# Build and publish directory
+build:
+  command: npm install && npm run build
+  publish: dist
+
+# Redirect all routes to index.html for SPA
+redirects:
+  - source: /*
+    destination: /index.html
+    type: rewrite
