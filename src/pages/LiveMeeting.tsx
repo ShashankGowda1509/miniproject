@@ -611,20 +611,32 @@ export default function LiveMeeting() {
     }
   }
 
-  // Auto-fill room ID from URL
+  // Auto-fill room ID from URL and auto-join when ready
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const room = params.get('room');
     
-    if (room && !isInMeeting && !roomId) {
+    if (room && !isInMeeting) {
       console.log('📋 Room ID from URL:', room);
       setRoomId(room);
+      
       toast({
-        title: 'Room ID Detected',
-        description: 'Click "Join Meeting" to connect',
+        title: 'Room Detected',
+        description: 'Setting up connection...',
       });
     }
   }, []);
+  
+  // Auto-join meeting once everything is ready (peer + room ID from URL)
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const room = params.get('room');
+    
+    if (room && isPeerReady && !isInMeeting && !localStream && roomId === room) {
+      console.log('🚀 Auto-joining meeting - all conditions met');
+      startMeeting();
+    }
+  }, [isPeerReady, roomId]);
 
   // Cleanup on unmount
   useEffect(() => {
