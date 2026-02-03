@@ -1,0 +1,25 @@
+# Self-hosted LiveKit configuration (optional)
+# For local development with Docker
+
+port: 7880
+bind_addresses:
+  - "0.0.0.0"
+
+rtc:
+  port_range_start: 50000
+  port_range_end: 60000
+  use_external_ip: false
+
+redis:
+  address: localhost:6379
+
+keys:
+  APIKeySecret: devkey: apisecret
+
+room:
+  auto_create: true
+  empty_timeout: 300
+  max_participants: 10
+
+logging:
+  level: info
