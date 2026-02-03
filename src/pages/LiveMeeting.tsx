@@ -10,9 +10,15 @@ import { toast } from '@/hooks/use-toast';
 
 interface TranscriptItem {
   id: string;
-  speaker: 'You' | 'Friend';
+  speaker: string;
   text: string;
   timestamp: Date;
+}
+
+interface Participant {
+  peerId: string;
+  stream: MediaStream;
+  call: MediaConnection;
 }
 
 export default function LiveMeeting() {
@@ -24,13 +30,11 @@ export default function LiveMeeting() {
   
   // Connection State
   const [myPeerId, setMyPeerId] = useState('');
-  const [remotePeerId, setRemotePeerId] = useState('');
-  const [isConnected, setIsConnected] = useState(false);
+  const [participants, setParticipants] = useState<Map<string, Participant>>(new Map());
   const [isConnecting, setIsConnecting] = useState(false);
   
   // Media State
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
-  const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
   
   // Transcript State
   const [transcript, setTranscript] = useState<TranscriptItem[]>([]);
@@ -38,10 +42,14 @@ export default function LiveMeeting() {
   
   // Refs
   const peerRef = useRef<Peer | null>(null);
-  const callRef = useRef<MediaConnection | null>(null);
   const localVideoRef = useRef<HTMLVideoElement>(null);
-  const remoteVideoRef = useRef<HTMLVideoElement>(null);
   const recognitionRef = useRef<any>(null);
+  const participantsRef = useRef<Map<string, Participant>>(new Map());
+
+  // Keep participants ref in sync
+  useEffect(() => {
+    participantsRef.current = participants;
+  }, [participants]);
 
   // Initialize PeerJS
   useEffect(() => {
@@ -51,6 +59,8 @@ export default function LiveMeeting() {
       config: {
         iceServers: [
           { urls: 'stun:stun.l.google.com:19302' },
+          { urls: 'stun:stun1.l.google.com:19302' },
+          { urls: 'stun:stun2.l.google.com:19302' },
           { urls: 'stun:global.stun.twilio.com:3478' }
         ]
       }
@@ -65,78 +75,146 @@ export default function LiveMeeting() {
     peer.on('call', async (incomingCall) => {
       console.log('📞 Receiving call from:', incomingCall.peer);
       
-      if (!localStream) {
+      // Don't accept calls from yourself
+      if (incomingCall.peer === myPeerId) {
+        console.log('❌ Ignoring call from self');
+        return;
+      }
+
+      // Check if already connected to this peer
+      if (participantsRef.current.has(incomingCall.peer)) {
+        console.log('⚠️ Already connected to', incomingCall.peer);
+        return;
+      }
+      
+      // Get local stream if not already in meeting
+      let stream = localStream;
+      if (!stream) {
         try {
-          const stream = await navigator.mediaDevices.getUserMedia({
+          stream = await navigator.mediaDevices.getUserMedia({
             video: { width: { ideal: 1280 }, height: { ideal: 720 } },
-            audio: { echoCancellation: true, noiseSuppression: true }
+            audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
           });
           setLocalStream(stream);
           setIsInMeeting(true);
           startSpeechRecognition();
-          incomingCall.answer(stream);
         } catch (err) {
           console.error('Failed to get media:', err);
+          toast({ title: 'Access Denied', description: 'Camera/microphone access required', variant: 'destructive' });
           return;
         }
-      } else {
-        incomingCall.answer(localStream);
       }
       
-      incomingCall.on('stream', (stream) => {
-        console.log('✅ Connected!');
-        setRemoteStream(stream);
-        setRemotePeerId(incomingCall.peer);
-        setIsConnected(true);
-        setIsConnecting(false);
-        toast({ title: 'Connected!', description: 'You are now in the meeting' });
+      // Answer the call
+      incomingCall.answer(stream);
+      
+      incomingCall.on('stream', (remoteStream) => {
+        console.log('✅ Stream received from:', incomingCall.peer);
+        addParticipant(incomingCall.peer, remoteStream, incomingCall);
+        toast({ 
+          title: 'Participant Joined', 
+          description: `${incomingCall.peer.substring(0, 8)}... joined the meeting` 
+        });
       });
       
-      incomingCall.on('close', () => handleCallEnd());
-      callRef.current = incomingCall;
+      incomingCall.on('close', () => {
+        console.log('📴 Call closed from:', incomingCall.peer);
+        removeParticipant(incomingCall.peer);
+      });
+
+      incomingCall.on('error', (err) => {
+        console.error('❌ Call error from', incomingCall.peer, err);
+        removeParticipant(incomingCall.peer);
+      });
     });
 
     peer.on('error', (err) => {
       console.error('❌ Peer error:', err);
+      setIsConnecting(false);
+      
       if (err.type === 'peer-unavailable') {
-        setIsConnecting(false);
-        toast({ title: 'Connection Failed', description: 'Person not available', variant: 'destructive' });
+        toast({ title: 'Connection Failed', description: 'Person not available or offline', variant: 'destructive' });
+      } else if (err.type === 'network') {
+        toast({ title: 'Network Error', description: 'Check your internet connection', variant: 'destructive' });
+      } else {
+        toast({ title: 'Connection Error', description: err.message || 'Please try again', variant: 'destructive' });
       }
     });
 
+    peer.on('disconnected', () => {
+      console.log('⚠️ Peer disconnected, attempting reconnect...');
+      setTimeout(() => {
+        if (peer && !peer.destroyed) {
+          peer.reconnect();
+        }
+      }, 1000);
+    });
+
     return () => {
-      if (peer && !peer.destroyed) peer.destroy();
+      if (peer && !peer.destroyed) {
+        peer.destroy();
+      }
     };
   }, []);
 
-  // Attach videos
+  // Attach local video
   useEffect(() => {
     if (localVideoRef.current && localStream) {
       localVideoRef.current.srcObject = localStream;
+      localVideoRef.current.play().catch(err => {
+        console.error('Error playing local video:', err);
+      });
     }
   }, [localStream]);
 
-  useEffect(() => {
-    if (remoteVideoRef.current && remoteStream) {
-      remoteVideoRef.current.srcObject = remoteStream;
-    }
-  }, [remoteStream]);
+  // Add participant helper
+  function addParticipant(peerId: string, stream: MediaStream, call: MediaConnection) {
+    setParticipants(prev => {
+      const newMap = new Map(prev);
+      newMap.set(peerId, { peerId, stream, call });
+      return newMap;
+    });
+    addTranscript(peerId.substring(0, 8), `${peerId.substring(0, 8)}... joined`);
+  }
+
+  // Remove participant helper
+  function removeParticipant(peerId: string) {
+    setParticipants(prev => {
+      const newMap = new Map(prev);
+      newMap.delete(peerId);
+      return newMap;
+    });
+    addTranscript(peerId.substring(0, 8), `${peerId.substring(0, 8)}... left the meeting`);
+    toast({ 
+      title: 'Participant Left', 
+      description: `${peerId.substring(0, 8)}... left the meeting` 
+    });
+  }
 
   // Auto-join from URL
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const room = params.get('room');
-    if (room && room !== myPeerId && !isInMeeting) {
+    if (room && room !== myPeerId && !isInMeeting && myPeerId) {
       setRoomIdInput(room);
       toast({ title: 'Meeting Link Detected', description: 'Click "Join Meeting" to connect' });
     }
-  }, [myPeerId]);
+  }, [myPeerId, isInMeeting]);
 
   // Start meeting
   async function startMeeting() {
     if (!peerRef.current) {
-      toast({ title: 'Not Ready', description: 'Please wait...', variant: 'destructive' });
+      toast({ title: 'Not Ready', description: 'Please wait for initialization...', variant: 'destructive' });
       return;
+    }
+
+    // Validate room ID if provided
+    const targetPeerId = roomIdInput.trim();
+    if (targetPeerId) {
+      if (targetPeerId === myPeerId) {
+        toast({ title: 'Invalid Room ID', description: 'Cannot join your own meeting', variant: 'destructive' });
+        return;
+      }
     }
 
     setIsConnecting(true);
@@ -154,14 +232,13 @@ export default function LiveMeeting() {
       
       addTranscript('You', 'Meeting started. Share your link to invite others.');
 
-      if (roomIdInput && roomIdInput.trim() && roomIdInput !== myPeerId) {
-        setTimeout(() => callPeer(roomIdInput.trim()), 1000);
+      // If joining someone, call them
+      if (targetPeerId) {
+        setTimeout(() => callPeer(targetPeerId), 500);
+        toast({ title: 'Meeting Started', description: 'Connecting to peer...' });
+      } else {
+        toast({ title: 'Meeting Started', description: 'Share your link to invite others' });
       }
-
-      toast({
-        title: 'Meeting Started',
-        description: roomIdInput ? 'Connecting...' : 'Share your link to invite others'
-      });
     } catch (err) {
       console.error('Error:', err);
       setIsConnecting(false);
@@ -171,7 +248,21 @@ export default function LiveMeeting() {
 
   // Call peer
   function callPeer(peerId: string) {
-    if (!peerRef.current || !localStream || peerId === myPeerId) return;
+    if (!peerRef.current || !localStream) {
+      console.log('❌ Cannot call: missing peer or stream');
+      return;
+    }
+
+    if (peerId === myPeerId) {
+      toast({ title: 'Invalid', description: 'Cannot call yourself', variant: 'destructive' });
+      return;
+    }
+
+    if (participantsRef.current.has(peerId)) {
+      console.log('⚠️ Already connected to', peerId);
+      toast({ title: 'Already Connected', description: 'You are already in a call with this person' });
+      return;
+    }
 
     console.log('📞 Calling:', peerId);
     setIsConnecting(true);
@@ -180,58 +271,60 @@ export default function LiveMeeting() {
     
     const timeout = setTimeout(() => {
       setIsConnecting(false);
-      toast({ title: 'Timeout', description: 'Could not connect', variant: 'destructive' });
+      if (!participantsRef.current.has(peerId)) {
+        toast({ title: 'Connection Timeout', description: 'Could not reach peer. Check the ID and try again.', variant: 'destructive' });
+      }
     }, 15000);
 
     call.on('stream', (stream) => {
       clearTimeout(timeout);
-      console.log('✅ Connected!');
-      setRemoteStream(stream);
-      setRemotePeerId(peerId);
-      setIsConnected(true);
+      console.log('✅ Stream received from:', peerId);
+      addParticipant(peerId, stream, call);
       setIsConnecting(false);
-      toast({ title: 'Connected!', description: 'You are now in the meeting' });
+      toast({ title: 'Connected!', description: `Connected to ${peerId.substring(0, 8)}...` });
     });
 
     call.on('close', () => {
       clearTimeout(timeout);
-      handleCallEnd();
+      removeParticipant(peerId);
     });
 
-    callRef.current = call;
-  }
-
-  // Handle call end
-  function handleCallEnd() {
-    setRemoteStream(null);
-    setRemotePeerId('');
-    setIsConnected(false);
-    addTranscript('You', 'Other person left the meeting');
-    toast({ title: 'Disconnected', description: 'Other person left' });
+    call.on('error', (err) => {
+      clearTimeout(timeout);
+      console.error('❌ Call error:', err);
+      setIsConnecting(false);
+      toast({ title: 'Call Failed', description: 'Could not connect to peer', variant: 'destructive' });
+    });
   }
 
   // Leave meeting
   function leaveMeeting() {
+    // Stop speech recognition
     if (recognitionRef.current) {
       try { recognitionRef.current.stop(); } catch (e) {}
       recognitionRef.current = null;
     }
     
-    if (callRef.current) {
-      callRef.current.close();
-      callRef.current = null;
-    }
+    // Close all peer connections
+    participants.forEach((participant) => {
+      try {
+        participant.call.close();
+      } catch (e) {
+        console.error('Error closing call:', e);
+      }
+    });
+    setParticipants(new Map());
     
+    // Stop local stream
     if (localStream) {
       localStream.getTracks().forEach(track => track.stop());
       setLocalStream(null);
     }
     
     setIsInMeeting(false);
-    setIsConnected(false);
-    setRemoteStream(null);
     setTranscript([]);
     setIsListening(false);
+    setRoomIdInput('');
     
     toast({ title: 'Meeting Ended', description: 'You left the meeting' });
   }
@@ -239,20 +332,38 @@ export default function LiveMeeting() {
   // Speech recognition
   function startSpeechRecognition() {
     const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SpeechRecognition) return;
+    if (!SpeechRecognition) {
+      console.log('⚠️ Speech recognition not supported');
+      return;
+    }
 
     const recognition = new SpeechRecognition();
     recognition.continuous = true;
     recognition.interimResults = false;
+    recognition.lang = 'en-US';
 
     recognition.onresult = (event: any) => {
       const text = event.results[event.results.length - 1][0].transcript;
       addTranscript('You', text);
     };
 
+    recognition.onerror = (event: any) => {
+      console.error('Speech recognition error:', event.error);
+      if (event.error === 'no-speech') {
+        // Just restart, this is normal
+        return;
+      }
+    };
+
     recognition.onend = () => {
       if (isInMeeting && recognitionRef.current) {
-        setTimeout(() => { try { recognition.start(); } catch (e) {} }, 100);
+        setTimeout(() => { 
+          try { 
+            recognition.start(); 
+          } catch (e) {
+            console.log('Recognition restart failed:', e);
+          } 
+        }, 100);
       }
     };
 
@@ -260,11 +371,14 @@ export default function LiveMeeting() {
       recognition.start();
       setIsListening(true);
       recognitionRef.current = recognition;
-    } catch (e) {}
+      console.log('✅ Speech recognition started');
+    } catch (e) {
+      console.error('Failed to start speech recognition:', e);
+    }
   }
 
   // Add transcript
-  function addTranscript(speaker: 'You' | 'Friend', text: string) {
+  function addTranscript(speaker: string, text: string) {
     setTranscript(prev => [...prev, {
       id: `${Date.now()}-${Math.random()}`,
       speaker,
@@ -302,13 +416,21 @@ export default function LiveMeeting() {
       navigator.share({ title: 'Join My Meeting', url: link });
     } else {
       navigator.clipboard.writeText(link);
-      toast({ title: 'Link Copied!', description: 'Share this link with others' });
+      toast({ title: 'Link Copied!', description: 'Share this link with others to join' });
     }
   }
 
   function copyId() {
     navigator.clipboard.writeText(myPeerId);
-    toast({ title: 'Copied!', description: 'Meeting ID copied' });
+    toast({ title: 'Copied!', description: 'Meeting ID copied to clipboard' });
+  }
+
+  // Add more people to existing meeting
+  function addMorePeople() {
+    const peerId = prompt('Enter Peer ID to add:');
+    if (peerId && peerId.trim()) {
+      callPeer(peerId.trim());
+    }
   }
 
   // Join screen
@@ -373,6 +495,9 @@ export default function LiveMeeting() {
   }
 
   // Meeting view
+  const participantCount = participants.size + 1; // +1 for yourself
+  const participantsArray = Array.from(participants.values());
+
   return (
     <div className="min-h-screen bg-background flex flex-col">
       <div className="border-b bg-card px-6 py-3 flex items-center justify-between">
@@ -384,13 +509,13 @@ export default function LiveMeeting() {
           
           <div className="flex items-center gap-2 text-sm">
             <Users className="h-4 w-4" />
-            <span className="font-medium">{isConnected ? '2' : '1'} Participant{isConnected ? 's' : ''}</span>
+            <span className="font-medium">{participantCount} Participant{participantCount > 1 ? 's' : ''}</span>
           </div>
           
-          {isConnected && (
+          {participants.size > 0 && (
             <div className="flex items-center gap-2 text-sm">
               <div className="h-2 w-2 rounded-full bg-green-500 animate-pulse" />
-              <span className="text-green-600 dark:text-green-400 font-medium">Connected</span>
+              <span className="text-green-600 dark:text-green-400 font-medium">Live</span>
             </div>
           )}
         </div>
@@ -407,40 +532,74 @@ export default function LiveMeeting() {
             <Share2 className="h-4 w-4 mr-2" />
             Share Link
           </Button>
+          <Button size="sm" variant="outline" onClick={addMorePeople}>
+            <Users className="h-4 w-4 mr-2" />
+            Add People
+          </Button>
         </div>
       </div>
 
       <div className="flex-1 flex gap-4 p-4">
         <div className="flex-1 flex flex-col gap-4">
-          <div className="flex-1 bg-muted rounded-lg overflow-hidden relative">
-            {remoteStream ? (
-              <video ref={remoteVideoRef} autoPlay playsInline className="w-full h-full object-cover" />
-            ) : (
-              <div className="w-full h-full flex items-center justify-center">
+          {/* Video Grid */}
+          <div className="flex-1 grid gap-4" style={{
+            gridTemplateColumns: participantsArray.length === 0 ? '1fr' :
+                                 participantsArray.length === 1 ? 'repeat(2, 1fr)' :
+                                 participantsArray.length === 2 ? 'repeat(2, 1fr)' :
+                                 'repeat(2, 1fr)',
+            gridTemplateRows: participantsArray.length <= 2 ? '1fr' : 'repeat(2, 1fr)'
+          }}>
+            {/* Your video */}
+            <div className="bg-muted rounded-lg overflow-hidden relative">
+              {localStream && (
+                <video 
+                  ref={localVideoRef} 
+                  autoPlay 
+                  playsInline 
+                  muted 
+                  className="w-full h-full object-cover" 
+                />
+              )}
+              {!isVideoOn && (
+                <div className="absolute inset-0 bg-muted flex items-center justify-center">
+                  <div className="text-center">
+                    <VideoOff className="h-12 w-12 mx-auto mb-2 text-muted-foreground" />
+                    <p className="text-sm text-muted-foreground">Camera Off</p>
+                  </div>
+                </div>
+              )}
+              <div className="absolute bottom-3 left-3 bg-black/70 px-3 py-1 rounded-full">
+                <span className="text-white text-sm font-medium">You</span>
+              </div>
+              {!isAudioOn && (
+                <div className="absolute top-3 right-3 bg-red-500 p-2 rounded-full">
+                  <MicOff className="h-4 w-4 text-white" />
+                </div>
+              )}
+            </div>
+
+            {/* Remote participants */}
+            {participantsArray.map((participant) => (
+              <RemoteVideo key={participant.peerId} participant={participant} />
+            ))}
+
+            {/* Waiting placeholder */}
+            {participantsArray.length === 0 && (
+              <div className="bg-muted rounded-lg overflow-hidden relative flex items-center justify-center">
                 <div className="text-center">
                   <Users className="h-16 w-16 mx-auto mb-4 text-muted-foreground" />
-                  <p className="text-muted-foreground">
-                    {isConnecting ? 'Connecting...' : 'Waiting for others'}
+                  <p className="text-muted-foreground font-medium">
+                    {isConnecting ? 'Connecting...' : 'Waiting for others to join'}
                   </p>
                   {myPeerId && (
-                    <p className="text-sm text-muted-foreground mt-2">
-                      Meeting ID: <code className="bg-muted px-2 py-1 rounded">{myPeerId}</code>
-                    </p>
+                    <div className="mt-4 space-y-2">
+                      <p className="text-sm text-muted-foreground">Share your Meeting ID:</p>
+                      <code className="bg-muted-foreground/20 px-3 py-1 rounded text-sm">{myPeerId}</code>
+                    </div>
                   )}
                 </div>
               </div>
             )}
-            
-            <div className="absolute bottom-4 right-4 w-48 h-36 bg-black rounded-lg overflow-hidden border-2 border-white shadow-lg">
-              {localStream && (
-                <video ref={localVideoRef} autoPlay playsInline muted className="w-full h-full object-cover" />
-              )}
-              {!isVideoOn && (
-                <div className="absolute inset-0 bg-muted flex items-center justify-center">
-                  <VideoOff className="h-8 w-8" />
-                </div>
-              )}
-            </div>
           </div>
 
           <div className="flex items-center justify-center gap-3">
@@ -478,22 +637,22 @@ export default function LiveMeeting() {
           <div className="p-4 border-b space-y-3">
             <h3 className="font-semibold flex items-center gap-2">
               <Users className="h-4 w-4" />
-              Participants ({isConnected ? '2' : '1'})
+              Participants ({participantCount})
             </h3>
-            <div className="space-y-2">
+            <div className="space-y-2 max-h-32 overflow-y-auto">
               <div className="flex items-center gap-2 bg-primary/10 px-3 py-2 rounded-md">
                 <div className="h-2 w-2 rounded-full bg-green-500" />
-                <span className="text-sm font-medium">You</span>
+                <span className="text-sm font-medium">You (Host)</span>
               </div>
-              {isConnected && (
-                <div className="flex items-center gap-2 bg-blue-500/10 px-3 py-2 rounded-md">
+              {participantsArray.map((participant) => (
+                <div key={participant.peerId} className="flex items-center gap-2 bg-blue-500/10 px-3 py-2 rounded-md">
                   <div className="h-2 w-2 rounded-full bg-blue-500" />
-                  <span className="text-sm font-medium">Friend</span>
+                  <span className="text-sm font-medium">{participant.peerId.substring(0, 12)}...</span>
                 </div>
-              )}
-              {!isConnected && (
+              ))}
+              {participantsArray.length === 0 && (
                 <div className="text-xs text-muted-foreground px-3 py-2">
-                  Waiting for others to join...
+                  No other participants yet
                 </div>
               )}
             </div>
@@ -509,7 +668,8 @@ export default function LiveMeeting() {
           <div className="flex-1 overflow-y-auto p-4 space-y-3">
             {transcript.length === 0 ? (
               <div className="text-center text-muted-foreground text-sm py-8">
-                <p>Start speaking to see transcript</p>
+                <p>Transcript will appear here</p>
+                <p className="text-xs mt-2">Start speaking to see live transcription</p>
               </div>
             ) : (
               transcript.map((item) => (
@@ -528,6 +688,40 @@ export default function LiveMeeting() {
             )}
           </div>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// Component for remote video participant
+function RemoteVideo({ participant }: { participant: Participant }) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+
+  useEffect(() => {
+    if (videoRef.current && participant.stream) {
+      videoRef.current.srcObject = participant.stream;
+      videoRef.current.play().catch(err => {
+        console.error('Error playing remote video:', err);
+        // Retry after a short delay
+        setTimeout(() => {
+          videoRef.current?.play().catch(e => console.error('Retry failed:', e));
+        }, 500);
+      });
+    }
+  }, [participant.stream]);
+
+  return (
+    <div className="bg-muted rounded-lg overflow-hidden relative">
+      <video 
+        ref={videoRef} 
+        autoPlay 
+        playsInline 
+        className="w-full h-full object-cover" 
+      />
+      <div className="absolute bottom-3 left-3 bg-black/70 px-3 py-1 rounded-full">
+        <span className="text-white text-sm font-medium">
+          {participant.peerId.substring(0, 12)}...
+        </span>
       </div>
     </div>
   );
