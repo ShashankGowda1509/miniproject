@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "server": "tsx watch backend/server.ts"
+    "server": "tsx watch backend/server.ts",
+    "start:prod": "node start-prod.js"
   },
   "dependencies": {
     "@livekit/components-react": "^2.5.6",
