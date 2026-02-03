@@ -45,21 +45,11 @@ export default function LiveMeeting() {
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const recognitionRef = useRef<any>(null);
   const participantsRef = useRef<Map<string, Participant>>(new Map());
-  const localStreamRef = useRef<MediaStream | null>(null);
-  const myPeerIdRef = useRef('');
 
-  // Sychronize refs
+  // Keep participants ref in sync
   useEffect(() => {
     participantsRef.current = participants;
   }, [participants]);
-
-  useEffect(() => {
-    localStreamRef.current = localStream;
-  }, [localStream]);
-
-  useEffect(() => {
-    myPeerIdRef.current = myPeerId;
-  }, [myPeerId]);
 
   // Initialize PeerJS
   useEffect(() => {
@@ -79,7 +69,6 @@ export default function LiveMeeting() {
     peer.on('open', (id) => {
       console.log('✅ My Peer ID:', id);
       setMyPeerId(id);
-      myPeerIdRef.current = id;
       peerRef.current = peer;
     });
 
@@ -87,7 +76,7 @@ export default function LiveMeeting() {
       console.log('📞 Receiving call from:', incomingCall.peer);
       
       // Don't accept calls from yourself
-      if (incomingCall.peer === myPeerIdRef.current) {
+      if (incomingCall.peer === myPeerId) {
         console.log('❌ Ignoring call from self');
         return;
       }
@@ -98,18 +87,15 @@ export default function LiveMeeting() {
         return;
       }
       
-      // Get local stream - checking REF instead of closure state
-      let stream = localStreamRef.current;
-      
+      // Get local stream if not already in meeting
+      let stream = localStream;
       if (!stream) {
         try {
-          console.log('📷 Getting new stream for incoming call...');
           stream = await navigator.mediaDevices.getUserMedia({
             video: { width: { ideal: 1280 }, height: { ideal: 720 } },
             audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
           });
           setLocalStream(stream);
-          localStreamRef.current = stream; // Update ref immediately
           setIsInMeeting(true);
           startSpeechRecognition();
         } catch (err) {
@@ -119,7 +105,7 @@ export default function LiveMeeting() {
         }
       }
       
-      // Answer the call with the stream
+      // Answer the call
       incomingCall.answer(stream);
       
       incomingCall.on('stream', (remoteStream) => {
@@ -248,9 +234,8 @@ export default function LiveMeeting() {
 
       // If joining someone, call them
       if (targetPeerId) {
-        // Pass the stream explicitly to avoid closure issues
-        setTimeout(() => callPeer(targetPeerId, stream), 500);
-        toast({ title: 'Meeting Started', description: `Connecting to ${targetPeerId.substring(0, 6)}...` });
+        setTimeout(() => callPeer(targetPeerId), 500);
+        toast({ title: 'Meeting Started', description: 'Connecting to peer...' });
       } else {
         toast({ title: 'Meeting Started', description: 'Share your link to invite others' });
       }
@@ -262,14 +247,9 @@ export default function LiveMeeting() {
   }
 
   // Call peer
-  function callPeer(peerId: string, streamToUse?: MediaStream) {
-    // Use provided stream or fallback to ref/state
-    const stream = streamToUse || localStreamRef.current || localStream;
-
-    if (!peerRef.current || !stream) {
+  function callPeer(peerId: string) {
+    if (!peerRef.current || !localStream) {
       console.log('❌ Cannot call: missing peer or stream');
-      if (!stream) console.log('❌ Stream is missing');
-      if (!peerRef.current) console.log('❌ Peer ref is missing');
       return;
     }
 
@@ -287,15 +267,8 @@ export default function LiveMeeting() {
     console.log('📞 Calling:', peerId);
     setIsConnecting(true);
 
-    const call = peerRef.current.call(peerId, stream);
+    const call = peerRef.current.call(peerId, localStream);
     
-    // Safety check if call failed to initiate
-    if (!call) {
-      console.error('❌ Call failed to initiate - peerJS might be disconnected');
-      setIsConnecting(false);
-      return;
-    }
-
     const timeout = setTimeout(() => {
       setIsConnecting(false);
       if (!participantsRef.current.has(peerId)) {
@@ -303,10 +276,10 @@ export default function LiveMeeting() {
       }
     }, 15000);
 
-    call.on('stream', (remoteStream) => {
+    call.on('stream', (stream) => {
       clearTimeout(timeout);
       console.log('✅ Stream received from:', peerId);
-      addParticipant(peerId, remoteStream, call);
+      addParticipant(peerId, stream, call);
       setIsConnecting(false);
       toast({ title: 'Connected!', description: `Connected to ${peerId.substring(0, 8)}...` });
     });
