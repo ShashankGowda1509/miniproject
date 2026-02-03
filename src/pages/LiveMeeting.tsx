@@ -723,31 +723,62 @@ export default function LiveMeeting() {
 // Component for remote video participant
 function RemoteVideo({ participant }: { participant: Participant }) {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const [debugStats, setDebugStats] = useState('');
 
   useEffect(() => {
-    if (videoRef.current && participant.stream) {
-      videoRef.current.srcObject = participant.stream;
-      videoRef.current.play().catch(err => {
-        console.error('Error playing remote video:', err);
-        // Retry after a short delay
-        setTimeout(() => {
-          videoRef.current?.play().catch(e => console.error('Retry failed:', e));
-        }, 500);
-      });
+    const video = videoRef.current;
+    if (video && participant.stream) {
+      console.log('📺 Setting remote stream for', participant.peerId);
+      video.srcObject = participant.stream;
+      
+      // Log track info
+      const updateStats = () => {
+        const vTracks = participant.stream.getVideoTracks();
+        const aTracks = participant.stream.getAudioTracks();
+        const info = `Video: ${vTracks.length} (${vTracks[0]?.enabled ? 'On' : 'Off'}) | Audio: ${aTracks.length}`;
+        console.log(`[Stream Stats]`, info);
+        setDebugStats(info);
+      };
+
+      updateStats();
+
+      // Attempt playback
+      const playVideo = async () => {
+        try {
+          await video.play();
+          console.log('✅ Remote video playing');
+        } catch (err) {
+          console.error('❌ Error playing remote video:', err);
+        }
+      };
+
+      video.onloadedmetadata = () => {
+        console.log(`📐 Video dimensions: ${video.videoWidth}x${video.videoHeight}`);
+        playVideo();
+      };
+      
+      // Fallback if metadata event missed
+      if (video.readyState >= 1) {
+        playVideo();
+      }
     }
   }, [participant.stream]);
 
   return (
-    <div className="bg-muted rounded-lg overflow-hidden relative">
+    <div className="bg-muted rounded-lg overflow-hidden relative border-2 border-transparent hover:border-primary transition-colors">
       <video 
         ref={videoRef} 
         autoPlay 
         playsInline 
         className="w-full h-full object-cover" 
       />
+      <div className="absolute top-2 left-2 bg-black/60 text-white text-[10px] px-2 py-1 rounded pointer-events-none font-mono">
+        ID: {participant.peerId.substring(0, 6)}...<br/>
+        {debugStats}
+      </div>
       <div className="absolute bottom-3 left-3 bg-black/70 px-3 py-1 rounded-full">
         <span className="text-white text-sm font-medium">
-          {participant.peerId.substring(0, 12)}...
+          Guest
         </span>
       </div>
     </div>
