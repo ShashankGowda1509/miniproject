@@ -37,7 +37,8 @@ export default function RoomPage({ params }: RoomPageProps) {
     const fetchToken = async () => {
       try {
         setIsLoading(true);
-        const response = await fetch('http://localhost:3001/api/token', {
+        const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
+        const response = await fetch(`${apiUrl}/api/token`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
