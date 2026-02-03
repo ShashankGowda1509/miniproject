@@ -7,6 +7,9 @@ import { cn } from '@/lib/utils';
 import Peer from 'peerjs';
 import type { MediaConnection } from 'peerjs';
 import { toast } from '@/hooks/use-toast';
+import io, { Socket } from 'socket.io-client';
+
+const SIGNALING_SERVER = import.meta.env.VITE_SIGNALING_SERVER_URL || 'http://localhost:3001';
 
 interface TranscriptItem {
   id: string;
@@ -16,39 +19,37 @@ interface TranscriptItem {
 }
 
 interface Participant {
+  socketId: string;
   peerId: string;
-  stream: MediaStream;
-  call: MediaConnection;
+  name: string;
+  stream?: MediaStream;
+  call?: MediaConnection;
 }
 
 export default function LiveMeeting() {
-  // UI State
   const [isInMeeting, setIsInMeeting] = useState(false);
   const [isVideoOn, setIsVideoOn] = useState(true);
   const [isAudioOn, setIsAudioOn] = useState(true);
+  const [roomId, setRoomId] = useState('');
   const [roomIdInput, setRoomIdInput] = useState('');
-  
-  // Connection State
+  const [userName, setUserName] = useState('');
+  const [isHost, setIsHost] = useState(false);
   const [myPeerId, setMyPeerId] = useState('');
   const [participants, setParticipants] = useState<Map<string, Participant>>(new Map());
   const [isConnecting, setIsConnecting] = useState(false);
-  
-  // Media State
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
-  
-  // Transcript State
   const [transcript, setTranscript] = useState<TranscriptItem[]>([]);
   const [isListening, setIsListening] = useState(false);
   
-  // Refs
   const peerRef = useRef<Peer | null>(null);
+  const socketRef = useRef<Socket | null>(null);
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const recognitionRef = useRef<any>(null);
-  const participantsRef = useRef<Map<string, Participant>>(new Map());
   const localStreamRef = useRef<MediaStream | null>(null);
   const myPeerIdRef = useRef('');
+  const mySocketIdRef = useRef('');
+  const participantsRef = useRef<Map<string, Participant>>(new Map());
 
-  // Sychronize refs
   useEffect(() => {
     participantsRef.current = participants;
   }, [participants]);
@@ -61,17 +62,71 @@ export default function LiveMeeting() {
     myPeerIdRef.current = myPeerId;
   }, [myPeerId]);
 
-  // Initialize PeerJS
   useEffect(() => {
-    console.log('🔧 Initializing PeerJS...');
+    console.log('🔧 Initializing Socket.IO and PeerJS...');
     
+    const socket = io(SIGNALING_SERVER);
+    socketRef.current = socket;
+
+    socket.on('connect', () => {
+      console.log('✅ Socket connected:', socket.id);
+      mySocketIdRef.current = socket.id!;
+    });
+
+    socket.on('room-created', ({ roomId }) => {
+      setRoomId(roomId);
+      console.log('✅ Room created:', roomId);
+    });
+
+    socket.on('existing-participants', (existingParticipants: Participant[]) => {
+      console.log('📋 Existing participants:', existingParticipants);
+      existingParticipants.forEach(participant => {
+        callParticipant(participant);
+      });
+    });
+
+    socket.on('participant-joined', (participant: Participant) => {
+      console.log('👤 New participant joined:', participant);
+      addTranscript('System', `${participant.name} joined the meeting`);
+      toast({ 
+        title: 'Participant Joined', 
+        description: `${participant.name} joined the meeting` 
+      });
+    });
+
+    socket.on('participant-left', ({ socketId, name }) => {
+      console.log('👋 Participant left:', name);
+      removeParticipant(socketId);
+      addTranscript('System', `${name} left the meeting`);
+      toast({ 
+        title: 'Participant Left', 
+        description: `${name} left the meeting` 
+      });
+    });
+
+    socket.on('room-not-found', () => {
+      toast({ 
+        title: 'Room Not Found', 
+        description: 'The meeting room does not exist', 
+        variant: 'destructive' 
+      });
+      setIsConnecting(false);
+    });
+
+    socket.on('room-full', ({ maxParticipants }) => {
+      toast({ 
+        title: 'Room Full', 
+        description: `Maximum ${maxParticipants} participants allowed`, 
+        variant: 'destructive' 
+      });
+      setIsConnecting(false);
+    });
+
     const peer = new Peer({
       config: {
         iceServers: [
           { urls: 'stun:stun.l.google.com:19302' },
-          { urls: 'stun:stun1.l.google.com:19302' },
-          { urls: 'stun:stun2.l.google.com:19302' },
-          { urls: 'stun:global.stun.twilio.com:3478' }
+          { urls: 'stun:stun1.l.google.com:19302' }
         ]
       }
     });
@@ -86,149 +141,138 @@ export default function LiveMeeting() {
     peer.on('call', async (incomingCall) => {
       console.log('📞 Receiving call from:', incomingCall.peer);
       
-      // Don't accept calls from yourself
       if (incomingCall.peer === myPeerIdRef.current) {
         console.log('❌ Ignoring call from self');
         return;
       }
 
-      // Check if already connected to this peer
-      if (participantsRef.current.has(incomingCall.peer)) {
-        console.log('⚠️ Already connected to', incomingCall.peer);
+      const stream = localStreamRef.current;
+      if (!stream) {
+        console.error('❌ No local stream available');
         return;
       }
       
-      // Get local stream - checking REF instead of closure state
-      let stream = localStreamRef.current;
-      
-      if (!stream) {
-        try {
-          console.log('📷 Getting new stream for incoming call...');
-          stream = await navigator.mediaDevices.getUserMedia({
-            video: { width: { ideal: 1280 }, height: { ideal: 720 } },
-            audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
-          });
-          setLocalStream(stream);
-          localStreamRef.current = stream; // Update ref immediately
-          setIsInMeeting(true);
-          startSpeechRecognition();
-        } catch (err) {
-          console.error('Failed to get media:', err);
-          toast({ title: 'Access Denied', description: 'Camera/microphone access required', variant: 'destructive' });
-          return;
-        }
-      }
-      
-      // Answer the call with the stream
       incomingCall.answer(stream);
       
       incomingCall.on('stream', (remoteStream) => {
         console.log('✅ Stream received from:', incomingCall.peer);
-        addParticipant(incomingCall.peer, remoteStream, incomingCall);
-        toast({ 
-          title: 'Participant Joined', 
-          description: `${incomingCall.peer.substring(0, 8)}... joined the meeting` 
-        });
+        updateParticipantStream(incomingCall.peer, remoteStream, incomingCall);
       });
       
       incomingCall.on('close', () => {
         console.log('📴 Call closed from:', incomingCall.peer);
-        removeParticipant(incomingCall.peer);
       });
 
       incomingCall.on('error', (err) => {
-        console.error('❌ Call error from', incomingCall.peer, err);
-        removeParticipant(incomingCall.peer);
+        console.error('❌ Call error:', err);
       });
     });
 
     peer.on('error', (err) => {
       console.error('❌ Peer error:', err);
       setIsConnecting(false);
-      
-      if (err.type === 'peer-unavailable') {
-        toast({ title: 'Connection Failed', description: 'Person not available or offline', variant: 'destructive' });
-      } else if (err.type === 'network') {
-        toast({ title: 'Network Error', description: 'Check your internet connection', variant: 'destructive' });
-      } else {
-        toast({ title: 'Connection Error', description: err.message || 'Please try again', variant: 'destructive' });
-      }
-    });
-
-    peer.on('disconnected', () => {
-      console.log('⚠️ Peer disconnected, attempting reconnect...');
-      setTimeout(() => {
-        if (peer && !peer.destroyed) {
-          peer.reconnect();
-        }
-      }, 1000);
     });
 
     return () => {
+      socket.disconnect();
       if (peer && !peer.destroyed) {
         peer.destroy();
       }
     };
   }, []);
 
-  // Attach local video
   useEffect(() => {
     if (localVideoRef.current && localStream) {
       localVideoRef.current.srcObject = localStream;
-      localVideoRef.current.play().catch(err => {
-        console.error('Error playing local video:', err);
-      });
+      localVideoRef.current.play().catch(console.error);
     }
   }, [localStream]);
 
-  // Add participant helper
-  function addParticipant(peerId: string, stream: MediaStream, call: MediaConnection) {
-    setParticipants(prev => {
-      const newMap = new Map(prev);
-      newMap.set(peerId, { peerId, stream, call });
-      return newMap;
-    });
-    addTranscript(peerId.substring(0, 8), `${peerId.substring(0, 8)}... joined`);
-  }
+  function callParticipant(participant: Participant) {
+    const stream = localStreamRef.current;
+    const peer = peerRef.current;
 
-  // Remove participant helper
-  function removeParticipant(peerId: string) {
-    setParticipants(prev => {
-      const newMap = new Map(prev);
-      newMap.delete(peerId);
-      return newMap;
-    });
-    addTranscript(peerId.substring(0, 8), `${peerId.substring(0, 8)}... left the meeting`);
-    toast({ 
-      title: 'Participant Left', 
-      description: `${peerId.substring(0, 8)}... left the meeting` 
-    });
-  }
-
-  // Auto-join from URL
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const room = params.get('room');
-    if (room && room !== myPeerId && !isInMeeting && myPeerId) {
-      setRoomIdInput(room);
-      toast({ title: 'Meeting Link Detected', description: 'Click "Join Meeting" to connect' });
-    }
-  }, [myPeerId, isInMeeting]);
-
-  // Start meeting
-  async function startMeeting() {
-    if (!peerRef.current) {
-      toast({ title: 'Not Ready', description: 'Please wait for initialization...', variant: 'destructive' });
+    if (!peer || !stream) {
+      console.error('❌ Cannot call: missing peer or stream');
       return;
     }
 
-    // Validate room ID if provided
-    const targetPeerId = roomIdInput.trim();
-    if (targetPeerId) {
-      if (targetPeerId === myPeerId) {
-        toast({ title: 'Invalid Room ID', description: 'Cannot join your own meeting', variant: 'destructive' });
-        return;
+    console.log('📞 Calling:', participant.name, participant.peerId);
+
+    const call = peer.call(participant.peerId, stream, {
+      metadata: { name: userName, socketId: mySocketIdRef.current }
+    });
+
+    if (!call) {
+      console.error('❌ Failed to initiate call');
+      return;
+    }
+
+    call.on('stream', (remoteStream) => {
+      console.log('✅ Stream received from:', participant.name);
+      setParticipants(prev => {
+        const newMap = new Map(prev);
+        newMap.set(participant.socketId, {
+          ...participant,
+          stream: remoteStream,
+          call
+        });
+        return newMap;
+      });
+    });
+
+    call.on('close', () => {
+      removeParticipant(participant.socketId);
+    });
+
+    call.on('error', (err) => {
+      console.error('❌ Call error:', err);
+    });
+
+    setParticipants(prev => {
+      const newMap = new Map(prev);
+      newMap.set(participant.socketId, {
+        ...participant,
+        call
+      });
+      return newMap;
+    });
+  }
+
+  function updateParticipantStream(peerId: string, stream: MediaStream, call: MediaConnection) {
+    setParticipants(prev => {
+      const newMap = new Map(prev);
+      for (const [key, value] of newMap.entries()) {
+        if (value.peerId === peerId) {
+          newMap.set(key, { ...value, stream, call });
+          break;
+        }
       }
+      return newMap;
+    });
+  }
+
+  function removeParticipant(socketId: string) {
+    setParticipants(prev => {
+      const newMap = new Map(prev);
+      const participant = newMap.get(socketId);
+      if (participant?.call) {
+        participant.call.close();
+      }
+      newMap.delete(socketId);
+      return newMap;
+    });
+  }
+
+  async function startMeeting() {
+    if (!peerRef.current || !socketRef.current) {
+      toast({ title: 'Not Ready', description: 'Please wait...', variant: 'destructive' });
+      return;
+    }
+
+    if (!userName.trim()) {
+      toast({ title: 'Name Required', description: 'Please enter your name', variant: 'destructive' });
+      return;
     }
 
     setIsConnecting(true);
@@ -240,18 +284,30 @@ export default function LiveMeeting() {
       });
       
       setLocalStream(stream);
+      localStreamRef.current = stream;
       setIsInMeeting(true);
       setIsConnecting(false);
       startSpeechRecognition();
-      
-      addTranscript('You', 'Meeting started. Share your link to invite others.');
 
-      // If joining someone, call them
-      if (targetPeerId) {
-        // Pass the stream explicitly to avoid closure issues
-        setTimeout(() => callPeer(targetPeerId, stream), 500);
-        toast({ title: 'Meeting Started', description: `Connecting to ${targetPeerId.substring(0, 6)}...` });
+      if (roomIdInput.trim()) {
+        setIsHost(false);
+        setRoomId(roomIdInput.trim());
+        socketRef.current.emit('join-room', {
+          roomId: roomIdInput.trim(),
+          name: userName,
+          peerId: myPeerId
+        });
+        addTranscript('You', 'Joined the meeting');
       } else {
+        setIsHost(true);
+        const newRoomId = generateRoomId();
+        setRoomId(newRoomId);
+        socketRef.current.emit('create-room', {
+          roomId: newRoomId,
+          name: userName,
+          peerId: myPeerId
+        });
+        addTranscript('You', 'Meeting started');
         toast({ title: 'Meeting Started', description: 'Share your link to invite others' });
       }
     } catch (err) {
@@ -261,108 +317,44 @@ export default function LiveMeeting() {
     }
   }
 
-  // Call peer
-  function callPeer(peerId: string, streamToUse?: MediaStream) {
-    // Use provided stream or fallback to ref/state
-    const stream = streamToUse || localStreamRef.current || localStream;
-
-    if (!peerRef.current || !stream) {
-      console.log('❌ Cannot call: missing peer or stream');
-      if (!stream) console.log('❌ Stream is missing');
-      if (!peerRef.current) console.log('❌ Peer ref is missing');
-      return;
-    }
-
-    if (peerId === myPeerId) {
-      toast({ title: 'Invalid', description: 'Cannot call yourself', variant: 'destructive' });
-      return;
-    }
-
-    if (participantsRef.current.has(peerId)) {
-      console.log('⚠️ Already connected to', peerId);
-      toast({ title: 'Already Connected', description: 'You are already in a call with this person' });
-      return;
-    }
-
-    console.log('📞 Calling:', peerId);
-    setIsConnecting(true);
-
-    const call = peerRef.current.call(peerId, stream);
-    
-    // Safety check if call failed to initiate
-    if (!call) {
-      console.error('❌ Call failed to initiate - peerJS might be disconnected');
-      setIsConnecting(false);
-      return;
-    }
-
-    const timeout = setTimeout(() => {
-      setIsConnecting(false);
-      if (!participantsRef.current.has(peerId)) {
-        toast({ title: 'Connection Timeout', description: 'Could not reach peer. Check the ID and try again.', variant: 'destructive' });
-      }
-    }, 15000);
-
-    call.on('stream', (remoteStream) => {
-      clearTimeout(timeout);
-      console.log('✅ Stream received from:', peerId);
-      addParticipant(peerId, remoteStream, call);
-      setIsConnecting(false);
-      toast({ title: 'Connected!', description: `Connected to ${peerId.substring(0, 8)}...` });
-    });
-
-    call.on('close', () => {
-      clearTimeout(timeout);
-      removeParticipant(peerId);
-    });
-
-    call.on('error', (err) => {
-      clearTimeout(timeout);
-      console.error('❌ Call error:', err);
-      setIsConnecting(false);
-      toast({ title: 'Call Failed', description: 'Could not connect to peer', variant: 'destructive' });
-    });
+  function generateRoomId() {
+    return `room-${Math.random().toString(36).substring(2, 12)}`;
   }
 
-  // Leave meeting
   function leaveMeeting() {
-    // Stop speech recognition
     if (recognitionRef.current) {
       try { recognitionRef.current.stop(); } catch (e) {}
       recognitionRef.current = null;
     }
     
-    // Close all peer connections
     participants.forEach((participant) => {
       try {
-        participant.call.close();
-      } catch (e) {
-        console.error('Error closing call:', e);
-      }
+        participant.call?.close();
+      } catch (e) {}
     });
     setParticipants(new Map());
     
-    // Stop local stream
     if (localStream) {
       localStream.getTracks().forEach(track => track.stop());
       setLocalStream(null);
+    }
+
+    if (socketRef.current && roomId) {
+      socketRef.current.emit('leave-room', { roomId });
     }
     
     setIsInMeeting(false);
     setTranscript([]);
     setIsListening(false);
     setRoomIdInput('');
+    setRoomId('');
     
     toast({ title: 'Meeting Ended', description: 'You left the meeting' });
   }
 
-  // Speech recognition
   function startSpeechRecognition() {
     const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-      console.log('⚠️ Speech recognition not supported');
-      return;
-    }
+    if (!SpeechRecognition) return;
 
     const recognition = new SpeechRecognition();
     recognition.continuous = true;
@@ -375,22 +367,14 @@ export default function LiveMeeting() {
     };
 
     recognition.onerror = (event: any) => {
-      console.error('Speech recognition error:', event.error);
-      if (event.error === 'no-speech') {
-        // Just restart, this is normal
-        return;
+      if (event.error !== 'no-speech') {
+        console.error('Speech error:', event.error);
       }
     };
 
     recognition.onend = () => {
       if (isInMeeting && recognitionRef.current) {
-        setTimeout(() => { 
-          try { 
-            recognition.start(); 
-          } catch (e) {
-            console.log('Recognition restart failed:', e);
-          } 
-        }, 100);
+        setTimeout(() => { try { recognition.start(); } catch (e) {} }, 100);
       }
     };
 
@@ -398,13 +382,9 @@ export default function LiveMeeting() {
       recognition.start();
       setIsListening(true);
       recognitionRef.current = recognition;
-      console.log('✅ Speech recognition started');
-    } catch (e) {
-      console.error('Failed to start speech recognition:', e);
-    }
+    } catch (e) {}
   }
 
-  // Add transcript
   function addTranscript(speaker: string, text: string) {
     setTranscript(prev => [...prev, {
       id: `${Date.now()}-${Math.random()}`,
@@ -414,7 +394,6 @@ export default function LiveMeeting() {
     }]);
   }
 
-  // Toggle controls
   function toggleVideo() {
     if (localStream) {
       const track = localStream.getVideoTracks()[0];
@@ -435,32 +414,26 @@ export default function LiveMeeting() {
     }
   }
 
-  // Share link
   function shareLink() {
-    const link = `${window.location.origin}/live-meeting?room=${myPeerId}`;
-    
-    if (navigator.share) {
-      navigator.share({ title: 'Join My Meeting', url: link });
-    } else {
-      navigator.clipboard.writeText(link);
-      toast({ title: 'Link Copied!', description: 'Share this link with others to join' });
+    const link = `${window.location.origin}/live-meeting?room=${roomId}`;
+    navigator.clipboard.writeText(link);
+    toast({ title: 'Link Copied!', description: 'Share this link with others' });
+  }
+
+  function copyRoomId() {
+    navigator.clipboard.writeText(roomId);
+    toast({ title: 'Copied!', description: 'Meeting ID copied' });
+  }
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const room = params.get('room');
+    if (room && !isInMeeting && myPeerId) {
+      setRoomIdInput(room);
+      toast({ title: 'Meeting Link Detected', description: 'Enter your name and join' });
     }
-  }
+  }, [myPeerId, isInMeeting]);
 
-  function copyId() {
-    navigator.clipboard.writeText(myPeerId);
-    toast({ title: 'Copied!', description: 'Meeting ID copied to clipboard' });
-  }
-
-  // Add more people to existing meeting
-  function addMorePeople() {
-    const peerId = prompt('Enter Peer ID to add:');
-    if (peerId && peerId.trim()) {
-      callPeer(peerId.trim());
-    }
-  }
-
-  // Join screen
   if (!isInMeeting) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-background to-muted/30 p-6">
@@ -473,29 +446,22 @@ export default function LiveMeeting() {
                 </div>
               </div>
               <CardTitle className="text-3xl">Live Video Meeting</CardTitle>
-              <p className="text-muted-foreground mt-2">
-                Video call with live transcription
-              </p>
+              <p className="text-muted-foreground mt-2">Video call with live transcription</p>
             </CardHeader>
             <CardContent className="space-y-6">
-              {myPeerId && (
-                <div className="bg-muted/50 rounded-lg p-4">
-                  <p className="text-sm text-muted-foreground mb-2">Your Meeting ID:</p>
-                  <div className="flex items-center gap-2">
-                    <code className="flex-1 bg-background px-3 py-2 rounded text-sm font-mono truncate">
-                      {myPeerId}
-                    </code>
-                    <Button size="sm" variant="outline" onClick={copyId}>
-                      <Copy className="h-4 w-4" />
-                    </Button>
-                  </div>
-                </div>
-              )}
-
               <div className="space-y-3">
-                <label className="text-sm font-medium">Join Meeting (Optional)</label>
+                <p className="text-sm font-medium">Your Name *</p>
                 <Input
-                  placeholder="Enter Meeting ID to join someone"
+                  placeholder="Enter your name"
+                  value={userName}
+                  onChange={(e) => setUserName(e.target.value)}
+                />
+              </div>
+
+              <div className="space-y-2">
+                <p className="text-sm font-medium">Meeting ID (Optional)</p>
+                <Input
+                  placeholder="Enter meeting ID to join (leave empty for new)"
                   value={roomIdInput}
                   onChange={(e) => setRoomIdInput(e.target.value)}
                 />
@@ -504,15 +470,13 @@ export default function LiveMeeting() {
               <Button
                 className="w-full h-12"
                 onClick={startMeeting}
-                disabled={isConnecting || !myPeerId}
+                disabled={isConnecting || !myPeerId || !userName.trim()}
               >
                 {isConnecting ? 'Starting...' : roomIdInput ? 'Join Meeting' : 'Start New Meeting'}
               </Button>
 
-              <div className="text-center text-sm text-muted-foreground space-y-1">
-                <p>✓ HD Video & Audio</p>
-                <p>✓ Live Transcription</p>
-                <p>✓ Share Link</p>
+              <div className="text-center text-sm text-muted-foreground">
+                <p>✓ HD Video & Audio • ✓ Live Transcription • ✓ Up to 10 Participants</p>
               </div>
             </CardContent>
           </Card>
@@ -521,139 +485,92 @@ export default function LiveMeeting() {
     );
   }
 
-  // Meeting view
-  const participantCount = participants.size + 1; // +1 for yourself
+  const participantCount = participants.size + 1;
   const participantsArray = Array.from(participants.values());
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
       <div className="border-b bg-card px-6 py-3 flex items-center justify-between">
         <div className="flex items-center gap-4">
-          <div className="flex items-center gap-3">
-            <Video className="h-5 w-5 text-primary" />
-            <span className="font-semibold">Live Meeting</span>
-          </div>
-          
+          <Video className="h-5 w-5 text-primary" />
+          <span className="font-semibold">Live Meeting</span>
           <div className="flex items-center gap-2 text-sm">
             <Users className="h-4 w-4" />
-            <span className="font-medium">{participantCount} Participant{participantCount > 1 ? 's' : ''}</span>
+            <span>{participantCount} / 10</span>
           </div>
-          
-          {participants.size > 0 && (
-            <div className="flex items-center gap-2 text-sm">
-              <div className="h-2 w-2 rounded-full bg-green-500 animate-pulse" />
-              <span className="text-green-600 dark:text-green-400 font-medium">Live</span>
-            </div>
-          )}
+          <div className="flex items-center gap-2 text-sm">
+            <div className="h-2 w-2 rounded-full bg-green-500 animate-pulse" />
+            <span className="text-green-600">Live</span>
+          </div>
         </div>
         
         <div className="flex items-center gap-2">
           <div className="bg-muted px-3 py-1.5 rounded-md flex items-center gap-2">
-            <span className="text-xs text-muted-foreground">Meeting ID:</span>
-            <code className="text-xs font-mono font-semibold">{myPeerId.substring(0, 12)}...</code>
-            <Button size="sm" variant="ghost" onClick={copyId} className="h-6 w-6 p-0">
+            <span className="text-xs">Room:</span>
+            <code className="text-xs font-mono">{roomId.substring(0, 12)}...</code>
+            <Button size="sm" variant="ghost" onClick={copyRoomId} className="h-6 w-6 p-0">
               <Copy className="h-3 w-3" />
             </Button>
           </div>
           <Button size="sm" variant="outline" onClick={shareLink}>
             <Share2 className="h-4 w-4 mr-2" />
-            Share Link
-          </Button>
-          <Button size="sm" variant="outline" onClick={addMorePeople}>
-            <Users className="h-4 w-4 mr-2" />
-            Add People
+            Share
           </Button>
         </div>
       </div>
 
       <div className="flex-1 flex gap-4 p-4">
         <div className="flex-1 flex flex-col gap-4">
-          {/* Video Grid */}
           <div className="flex-1 grid gap-4" style={{
-            gridTemplateColumns: participantsArray.length === 0 ? '1fr' :
-                                 participantsArray.length === 1 ? 'repeat(2, 1fr)' :
-                                 participantsArray.length === 2 ? 'repeat(2, 1fr)' :
-                                 'repeat(2, 1fr)',
-            gridTemplateRows: participantsArray.length <= 2 ? '1fr' : 'repeat(2, 1fr)'
+            gridTemplateColumns: participantsArray.length <= 1 ? 'repeat(2, 1fr)' : 'repeat(3, 1fr)',
+            gridTemplateRows: participantsArray.length <= 3 ? '1fr' : 'repeat(2, 1fr)'
           }}>
-            {/* Your video */}
             <div className="bg-muted rounded-lg overflow-hidden relative">
               {localStream && (
-                <video 
-                  ref={localVideoRef} 
-                  autoPlay 
-                  playsInline 
-                  muted 
-                  className="w-full h-full object-cover" 
-                />
+                <video ref={localVideoRef} autoPlay playsInline muted className="w-full h-full object-cover" />
               )}
               {!isVideoOn && (
                 <div className="absolute inset-0 bg-muted flex items-center justify-center">
-                  <div className="text-center">
-                    <VideoOff className="h-12 w-12 mx-auto mb-2 text-muted-foreground" />
-                    <p className="text-sm text-muted-foreground">Camera Off</p>
-                  </div>
+                  <VideoOff className="h-12 w-12 text-muted-foreground" />
                 </div>
               )}
               <div className="absolute bottom-3 left-3 bg-black/70 px-3 py-1 rounded-full">
-                <span className="text-white text-sm font-medium">You</span>
+                <span className="text-white text-sm">{userName} (You)</span>
               </div>
               {!isAudioOn && (
                 <div className="absolute top-3 right-3 bg-red-500 p-2 rounded-full">
                   <MicOff className="h-4 w-4 text-white" />
                 </div>
               )}
+              {isHost && (
+                <div className="absolute top-3 left-3 bg-primary px-2 py-1 rounded-md">
+                  <span className="text-white text-xs">Host</span>
+                </div>
+              )}
             </div>
 
-            {/* Remote participants */}
             {participantsArray.map((participant) => (
-              <RemoteVideo key={participant.peerId} participant={participant} />
+              <RemoteVideo key={participant.socketId} participant={participant} />
             ))}
 
-            {/* Waiting placeholder */}
             {participantsArray.length === 0 && (
-              <div className="bg-muted rounded-lg overflow-hidden relative flex items-center justify-center">
+              <div className="bg-muted rounded-lg flex items-center justify-center">
                 <div className="text-center">
                   <Users className="h-16 w-16 mx-auto mb-4 text-muted-foreground" />
-                  <p className="text-muted-foreground font-medium">
-                    {isConnecting ? 'Connecting...' : 'Waiting for others to join'}
-                  </p>
-                  {myPeerId && (
-                    <div className="mt-4 space-y-2">
-                      <p className="text-sm text-muted-foreground">Share your Meeting ID:</p>
-                      <code className="bg-muted-foreground/20 px-3 py-1 rounded text-sm">{myPeerId}</code>
-                    </div>
-                  )}
+                  <p className="text-muted-foreground">Waiting for others...</p>
                 </div>
               </div>
             )}
           </div>
 
           <div className="flex items-center justify-center gap-3">
-            <Button
-              size="lg"
-              variant={isAudioOn ? 'default' : 'destructive'}
-              onClick={toggleAudio}
-              className="rounded-full h-14 w-14"
-            >
+            <Button size="lg" variant={isAudioOn ? 'default' : 'destructive'} onClick={toggleAudio} className="rounded-full h-14 w-14">
               {isAudioOn ? <Mic className="h-5 w-5" /> : <MicOff className="h-5 w-5" />}
             </Button>
-            
-            <Button
-              size="lg"
-              variant={isVideoOn ? 'default' : 'destructive'}
-              onClick={toggleVideo}
-              className="rounded-full h-14 w-14"
-            >
+            <Button size="lg" variant={isVideoOn ? 'default' : 'destructive'} onClick={toggleVideo} className="rounded-full h-14 w-14">
               {isVideoOn ? <Video className="h-5 w-5" /> : <VideoOff className="h-5 w-5" />}
             </Button>
-            
-            <Button
-              size="lg"
-              variant="destructive"
-              onClick={leaveMeeting}
-              className="rounded-full h-14 px-6"
-            >
+            <Button size="lg" variant="destructive" onClick={leaveMeeting} className="rounded-full h-14 px-6">
               <PhoneOff className="h-5 w-5 mr-2" />
               Leave
             </Button>
@@ -661,27 +578,22 @@ export default function LiveMeeting() {
         </div>
 
         <div className="w-96 bg-card border rounded-lg flex flex-col">
-          <div className="p-4 border-b space-y-3">
+          <div className="p-4 border-b">
             <h3 className="font-semibold flex items-center gap-2">
               <Users className="h-4 w-4" />
               Participants ({participantCount})
             </h3>
-            <div className="space-y-2 max-h-32 overflow-y-auto">
+            <div className="space-y-2 mt-3 max-h-40 overflow-y-auto">
               <div className="flex items-center gap-2 bg-primary/10 px-3 py-2 rounded-md">
                 <div className="h-2 w-2 rounded-full bg-green-500" />
-                <span className="text-sm font-medium">You (Host)</span>
+                <span className="text-sm">{userName} (You{isHost ? ' - Host' : ''})</span>
               </div>
-              {participantsArray.map((participant) => (
-                <div key={participant.peerId} className="flex items-center gap-2 bg-blue-500/10 px-3 py-2 rounded-md">
+              {participantsArray.map((p) => (
+                <div key={p.socketId} className="flex items-center gap-2 bg-blue-500/10 px-3 py-2 rounded-md">
                   <div className="h-2 w-2 rounded-full bg-blue-500" />
-                  <span className="text-sm font-medium">{participant.peerId.substring(0, 12)}...</span>
+                  <span className="text-sm">{p.name}</span>
                 </div>
               ))}
-              {participantsArray.length === 0 && (
-                <div className="text-xs text-muted-foreground px-3 py-2">
-                  No other participants yet
-                </div>
-              )}
             </div>
           </div>
           
@@ -696,18 +608,13 @@ export default function LiveMeeting() {
             {transcript.length === 0 ? (
               <div className="text-center text-muted-foreground text-sm py-8">
                 <p>Transcript will appear here</p>
-                <p className="text-xs mt-2">Start speaking to see live transcription</p>
               </div>
             ) : (
               transcript.map((item) => (
                 <div key={item.id} className="space-y-1">
                   <div className="flex items-center gap-2">
-                    <span className={cn("text-xs font-medium", item.speaker === 'You' ? 'text-primary' : 'text-blue-500')}>
-                      {item.speaker}
-                    </span>
-                    <span className="text-xs text-muted-foreground">
-                      {item.timestamp.toLocaleTimeString()}
-                    </span>
+                    <span className="text-xs font-medium text-primary">{item.speaker}</span>
+                    <span className="text-xs text-muted-foreground">{item.timestamp.toLocaleTimeString()}</span>
                   </div>
                   <p className="text-sm">{item.text}</p>
                 </div>
@@ -720,66 +627,27 @@ export default function LiveMeeting() {
   );
 }
 
-// Component for remote video participant
 function RemoteVideo({ participant }: { participant: Participant }) {
   const videoRef = useRef<HTMLVideoElement>(null);
-  const [debugStats, setDebugStats] = useState('');
 
   useEffect(() => {
-    const video = videoRef.current;
-    if (video && participant.stream) {
-      console.log('📺 Setting remote stream for', participant.peerId);
-      video.srcObject = participant.stream;
-      
-      // Log track info
-      const updateStats = () => {
-        const vTracks = participant.stream.getVideoTracks();
-        const aTracks = participant.stream.getAudioTracks();
-        const info = `Video: ${vTracks.length} (${vTracks[0]?.enabled ? 'On' : 'Off'}) | Audio: ${aTracks.length}`;
-        console.log(`[Stream Stats]`, info);
-        setDebugStats(info);
-      };
-
-      updateStats();
-
-      // Attempt playback
-      const playVideo = async () => {
-        try {
-          await video.play();
-          console.log('✅ Remote video playing');
-        } catch (err) {
-          console.error('❌ Error playing remote video:', err);
-        }
-      };
-
-      video.onloadedmetadata = () => {
-        console.log(`📐 Video dimensions: ${video.videoWidth}x${video.videoHeight}`);
-        playVideo();
-      };
-      
-      // Fallback if metadata event missed
-      if (video.readyState >= 1) {
-        playVideo();
-      }
+    if (videoRef.current && participant.stream) {
+      videoRef.current.srcObject = participant.stream;
+      videoRef.current.play().catch(console.error);
     }
   }, [participant.stream]);
 
   return (
-    <div className="bg-muted rounded-lg overflow-hidden relative border-2 border-transparent hover:border-primary transition-colors">
-      <video 
-        ref={videoRef} 
-        autoPlay 
-        playsInline 
-        className="w-full h-full object-cover" 
-      />
-      <div className="absolute top-2 left-2 bg-black/60 text-white text-[10px] px-2 py-1 rounded pointer-events-none font-mono">
-        ID: {participant.peerId.substring(0, 6)}...<br/>
-        {debugStats}
-      </div>
+    <div className="bg-muted rounded-lg overflow-hidden relative">
+      {participant.stream ? (
+        <video ref={videoRef} autoPlay playsInline className="w-full h-full object-cover" />
+      ) : (
+        <div className="w-full h-full flex items-center justify-center">
+          <Users className="h-12 w-12 text-muted-foreground" />
+        </div>
+      )}
       <div className="absolute bottom-3 left-3 bg-black/70 px-3 py-1 rounded-full">
-        <span className="text-white text-sm font-medium">
-          Guest
-        </span>
+        <span className="text-white text-sm">{participant.name}</span>
       </div>
     </div>
   );
