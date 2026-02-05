@@ -2,23 +2,35 @@ import express, { Request, Response } from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import { AccessToken } from 'livekit-server-sdk';
+import { createServer } from 'http';
+import { TranscriptSocketServer } from '../../live-transcript/server/transcriptSocket';
 
 dotenv.config();
 
 const app = express();
+const server = createServer(app);
 const PORT = process.env.PORT || 3001;
 
 // Middleware
 app.use(cors());
 app.use(express.json());
 
+// Initialize transcript WebSocket server
+const transcriptServer = new TranscriptSocketServer(server, '/transcript');
+console.log('📝 Transcript WebSocket server initialized');
+
 // Validate environment variables
 const LIVEKIT_API_KEY = process.env.LIVEKIT_API_KEY;
 const LIVEKIT_API_SECRET = process.env.LIVEKIT_API_SECRET;
+const DEEPGRAM_API_KEY = process.env.DEEPGRAM_API_KEY;
 
 if (!LIVEKIT_API_KEY || !LIVEKIT_API_SECRET) {
   console.error('❌ Missing required environment variables: LIVEKIT_API_KEY and LIVEKIT_API_SECRET');
   process.exit(1);
+}
+
+if (!DEEPGRAM_API_KEY) {
+  console.warn('⚠️  DEEPGRAM_API_KEY not found. Live transcription will not work.');
 }
 
 interface TokenRequestBody {
@@ -86,8 +98,12 @@ app.get('/health', (req: Request, res: Response) => {
 });
 
 // Start server
-app.listen(PORT, () => {
+server.listen(PORT, () => {
   console.log(`🚀 Backend server running on http://localhost:${PORT}`);
   console.log(`📡 Token endpoint: http://localhost:${PORT}/api/token`);
+  console.log(`📝 Transcript WebSocket: ws://localhost:${PORT}/transcript`);
   console.log(`🔑 LiveKit API Key: ${LIVEKIT_API_KEY?.substring(0, 10)}...`);
+  if (DEEPGRAM_API_KEY) {
+    console.log(`🎙️  Deepgram API Key configured: ${DEEPGRAM_API_KEY.substring(0, 10)}...`);
+  }
 });

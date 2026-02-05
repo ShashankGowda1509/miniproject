@@ -9,6 +9,7 @@ import {
 } from '@livekit/components-react';
 import '@livekit/components-styles/index.css';
 import { Room } from 'livekit-client';
+import { LiveTranscript } from '../../../components/LiveTranscript';
 
 interface RoomPageProps {
   params: {
@@ -136,34 +137,45 @@ export default function RoomPage({ params }: RoomPageProps) {
   const livekitUrl = process.env.NEXT_PUBLIC_LIVEKIT_URL || '';
 
   return (
-    <div className="min-h-screen bg-gray-900">
-      <LiveKitRoom
-        video={true}
-        audio={true}
-        token={token}
-        serverUrl={livekitUrl}
-        connect={true}
-        onDisconnected={handleDisconnect}
-        onError={handleError}
-        style={{ height: '100vh' }}
-        data-lk-theme="default"
-      >
-        {/* VideoConference provides a complete UI with video grid and controls */}
-        <VideoConference />
-        
-        {/* RoomAudioRenderer ensures audio works */}
-        <RoomAudioRenderer />
-        
-        {/* Custom Leave Button */}
-        <div className="absolute top-4 left-4 z-50">
-          <button
-            onClick={handleDisconnect}
-            className="bg-red-600 hover:bg-red-700 text-white font-semibold py-2 px-6 rounded-lg shadow-lg transition-colors"
-          >
-            Leave Room
-          </button>
-        </div>
-      </LiveKitRoom>
+    <div className="h-screen bg-gray-900 flex overflow-hidden">
+      {/* Main Video Area */}
+      <div className="flex-1 relative min-w-0">
+        <LiveKitRoom
+          video={true}
+          audio={true}
+          token={token}
+          serverUrl={livekitUrl}
+          connect={true}
+          onDisconnected={handleDisconnect}
+          onError={handleError}
+          style={{ height: '100vh' }}
+          data-lk-theme="default"
+        >
+          {/* VideoConference provides a complete UI with video grid and controls */}
+          <VideoConference />
+          
+          {/* RoomAudioRenderer ensures audio works */}
+          <RoomAudioRenderer />
+          
+          {/* Custom Leave Button */}
+          <div className="absolute top-4 left-4 z-50">
+            <button
+              onClick={handleDisconnect}
+              className="bg-red-600 hover:bg-red-700 text-white font-semibold py-2 px-6 rounded-lg shadow-lg transition-colors"
+            >
+              Leave Room
+            </button>
+          </div>
+        </LiveKitRoom>
+      </div>
+
+      {/* Live Transcript Panel */}
+      <div className="w-96 h-screen border-l border-gray-700 bg-gray-900 flex-shrink-0 overflow-hidden">
+        <LiveTranscript 
+          roomName={decodeURIComponent(roomName)}
+          className="h-screen"
+        />
+      </div>
     </div>
   );
 }

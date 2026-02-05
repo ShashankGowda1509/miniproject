@@ -11,6 +11,7 @@
     "start:prod": "node start-prod.js"
   },
   "dependencies": {
+    "@deepgram/sdk": "^3.4.0",
     "@livekit/components-react": "^2.5.6",
     "@livekit/components-styles": "^1.2.0",
     "@livekit/rtc-node": "^0.9.0",
@@ -21,7 +22,8 @@
     "livekit-server-sdk": "^2.6.1",
     "next": "14.2.13",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "ws": "^8.16.0"
   },
   "devDependencies": {
     "@types/cors": "^2.8.17",
@@ -29,6 +31,7 @@
     "@types/node": "^20",
     "@types/react": "^18",
     "@types/react-dom": "^18",
+    "@types/ws": "^8.5.10",
     "autoprefixer": "^10.4.20",
     "eslint": "^8",
     "eslint-config-next": "14.2.13",
