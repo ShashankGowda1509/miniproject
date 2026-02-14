@@ -12,9 +12,10 @@ import {
   LogOut,
   LayoutDashboard,
   Menu,
-  X
+  X,
+  ChevronRight
 } from 'lucide-react';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { cn } from '@/lib/utils';
 
 interface DashboardLayoutProps {
@@ -34,52 +35,53 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
   const { user, logout } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
-  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
 
   const handleLogout = () => {
     logout();
     navigate('/login');
   };
 
-  return (
-    <div className="min-h-screen bg-background flex">
-      {/* Mobile Sidebar Overlay */}
-      {sidebarOpen && (
-        <div 
-          className="fixed inset-0 bg-black/50 z-40 lg:hidden"
-          onClick={() => setSidebarOpen(false)}
-        />
-      )}
+  // Keyboard shortcut to toggle sidebar (Ctrl/Cmd + B)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'b') {
+        e.preventDefault();
+        setSidebarOpen(prev => !prev);
+      }
+    };
 
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
+  return (
+    <div className="min-h-screen bg-background flex relative">
       {/* Sidebar */}
       <aside className={cn(
-        "fixed lg:static inset-y-0 left-0 z-50 w-64 bg-sidebar text-sidebar-foreground transform transition-transform duration-200 ease-in-out lg:transform-none",
-        sidebarOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0"
+        "fixed inset-y-0 left-0 z-50 bg-sidebar text-sidebar-foreground transition-all duration-300 ease-in-out shadow-2xl",
+        sidebarOpen ? "w-64" : "w-0"
       )}>
-        <div className="flex flex-col h-full">
+        <div className={cn(
+          "flex flex-col h-full w-64 transition-opacity duration-300",
+          sidebarOpen ? "opacity-100 delay-100" : "opacity-0 pointer-events-none"
+        )}>
           {/* Logo */}
           <div className="p-6 border-b border-sidebar-border flex items-center justify-between">
             <Link to="/dashboard" className="flex items-center gap-3">
               <Brain className="h-8 w-8 text-sidebar-primary" />
               <span className="text-xl font-bold">InterviewAI</span>
             </Link>
-            <button 
-              className="lg:hidden text-sidebar-foreground"
-              onClick={() => setSidebarOpen(false)}
-            >
-              <X className="h-6 w-6" />
-            </button>
           </div>
 
           {/* Navigation */}
-          <nav className="flex-1 p-4 space-y-1">
+          <nav className="flex-1 p-4 space-y-1 overflow-y-auto">
             {navItems.map((item) => {
               const isActive = location.pathname === item.path;
               return (
                 <Link
                   key={item.path}
                   to={item.path}
-                  onClick={() => setSidebarOpen(false)}
                   className={cn(
                     "flex items-center gap-3 px-4 py-3 rounded-lg transition-colors",
                     isActive 
@@ -113,26 +115,54 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
               onClick={handleLogout}
             >
               <LogOut className="h-5 w-5" />
-              Sign Out
+              <span>Logout</span>
             </Button>
           </div>
         </div>
       </aside>
 
+      {/* Floating Toggle Button (when sidebar is closed) */}
+      {!sidebarOpen && (
+        <button
+          onClick={() => setSidebarOpen(true)}
+          className="fixed left-0 top-1/2 -translate-y-1/2 z-50 bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white p-4 rounded-r-xl shadow-2xl transition-all duration-300 hover:scale-110 hover:pr-6 group"
+          title="Open Sidebar (Ctrl+B)"
+        >
+          <div className="flex items-center gap-2">
+            <ChevronRight className="h-6 w-6" />
+            <span className="text-xs font-medium opacity-0 group-hover:opacity-100 transition-opacity duration-300 whitespace-nowrap">
+              Open
+            </span>
+          </div>
+        </button>
+      )}
+
       {/* Main Content */}
-      <div className="flex-1 flex flex-col min-h-screen">
-        {/* Top Bar */}
-        <header className="h-16 border-b bg-card flex items-center px-4 lg:px-8 gap-4">
+      <div className={cn(
+        "flex-1 flex flex-col transition-all duration-300",
+        sidebarOpen ? "ml-64" : "ml-0"
+      )}>
+        <header className="sticky top-0 z-40 border-b border-border px-4 lg:px-8 py-4 flex items-center gap-4 backdrop-blur-sm bg-card/95">
           <button 
-            className="lg:hidden p-2 hover:bg-muted rounded-lg"
-            onClick={() => setSidebarOpen(true)}
+            className="p-2 hover:bg-muted rounded-lg transition-all duration-200 hover:scale-110 group"
+            onClick={() => setSidebarOpen(!sidebarOpen)}
+            title={sidebarOpen ? "Close Sidebar (Ctrl+B)" : "Open Sidebar (Ctrl+B)"}
           >
-            <Menu className="h-6 w-6" />
+            {sidebarOpen ? (
+              <X className="h-6 w-6 text-foreground group-hover:text-red-600 transition-colors" />
+            ) : (
+              <Menu className="h-6 w-6 text-foreground group-hover:text-blue-600 transition-colors" />
+            )}
           </button>
-          <div className="flex-1">
+          <div className="flex-1 flex items-center gap-3">
             <h1 className="text-lg font-semibold text-foreground">
               {navItems.find(item => item.path === location.pathname)?.label || 'Dashboard'}
             </h1>
+            {!sidebarOpen && (
+              <span className="text-xs text-muted-foreground bg-muted px-2 py-1 rounded">
+                Ctrl+B to toggle
+              </span>
+            )}
           </div>
         </header>
 

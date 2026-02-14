@@ -1,654 +1,320 @@
-import { useState, useEffect, useRef } from 'react';
-import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Input } from '@/components/ui/input';
-import { Video, VideoOff, Mic, MicOff, PhoneOff, Copy, Share2, Users } from 'lucide-react';
-import { cn } from '@/lib/utils';
-import Peer from 'peerjs';
-import type { MediaConnection } from 'peerjs';
-import { toast } from '@/hooks/use-toast';
-import io, { Socket } from 'socket.io-client';
-
-const SIGNALING_SERVER = import.meta.env.VITE_SIGNALING_SERVER_URL || 'http://localhost:3001';
-
-interface TranscriptItem {
-  id: string;
-  speaker: string;
-  text: string;
-  timestamp: Date;
-}
-
-interface Participant {
-  socketId: string;
-  peerId: string;
-  name: string;
-  stream?: MediaStream;
-  call?: MediaConnection;
-}
+import { useEffect, useState } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import {
+  LiveKitRoom,
+  VideoConference,
+  RoomAudioRenderer,
+  useRoomContext,
+} from '@livekit/components-react';
+import '@livekit/components-styles/index.css';
+import { Room } from 'livekit-client';
+import { useTranscription } from '@/hooks/useTranscription';
+import { TranscriptPanel } from '@/components/TranscriptPanel';
 
 export default function LiveMeeting() {
-  const [isInMeeting, setIsInMeeting] = useState(false);
-  const [isVideoOn, setIsVideoOn] = useState(true);
-  const [isAudioOn, setIsAudioOn] = useState(true);
-  const [roomId, setRoomId] = useState('');
-  const [roomIdInput, setRoomIdInput] = useState('');
-  const [userName, setUserName] = useState('');
-  const [isHost, setIsHost] = useState(false);
-  const [myPeerId, setMyPeerId] = useState('');
-  const [participants, setParticipants] = useState<Map<string, Participant>>(new Map());
-  const [isConnecting, setIsConnecting] = useState(false);
-  const [localStream, setLocalStream] = useState<MediaStream | null>(null);
-  const [transcript, setTranscript] = useState<TranscriptItem[]>([]);
-  const [isListening, setIsListening] = useState(false);
+  const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   
-  const peerRef = useRef<Peer | null>(null);
-  const socketRef = useRef<Socket | null>(null);
-  const localVideoRef = useRef<HTMLVideoElement>(null);
-  const recognitionRef = useRef<any>(null);
-  const localStreamRef = useRef<MediaStream | null>(null);
-  const myPeerIdRef = useRef('');
-  const mySocketIdRef = useRef('');
-  const participantsRef = useRef<Map<string, Participant>>(new Map());
+  // Get room and name from URL params
+  const roomFromUrl = searchParams.get('room');
+  const nameFromUrl = searchParams.get('name');
+  
+  const [roomName, setRoomName] = useState(roomFromUrl || '');
+  const [userName, setUserName] = useState(nameFromUrl || '');
+  const [token, setToken] = useState<string>('');
+  const [error, setError] = useState<string>('');
+  const [isLoading, setIsLoading] = useState(false);
+  const [isJoined, setIsJoined] = useState(false);
 
   useEffect(() => {
-    participantsRef.current = participants;
-  }, [participants]);
+    // If both room and name are in URL, auto-join
+    if (roomFromUrl && nameFromUrl) {
+      handleJoinRoom(null);
+    }
+  }, [roomFromUrl, nameFromUrl]);
 
-  useEffect(() => {
-    localStreamRef.current = localStream;
-  }, [localStream]);
-
-  useEffect(() => {
-    myPeerIdRef.current = myPeerId;
-  }, [myPeerId]);
-
-  useEffect(() => {
-    console.log('🔧 Initializing Socket.IO and PeerJS...');
+  const handleJoinRoom = async (e: React.FormEvent | null) => {
+    if (e) e.preventDefault();
     
-    const socket = io(SIGNALING_SERVER);
-    socketRef.current = socket;
-
-    socket.on('connect', () => {
-      console.log('✅ Socket connected:', socket.id);
-      mySocketIdRef.current = socket.id!;
-    });
-
-    socket.on('room-created', ({ roomId }) => {
-      setRoomId(roomId);
-      console.log('✅ Room created:', roomId);
-    });
-
-    socket.on('existing-participants', (existingParticipants: Participant[]) => {
-      console.log('📋 Existing participants:', existingParticipants);
-      existingParticipants.forEach(participant => {
-        callParticipant(participant);
-      });
-    });
-
-    socket.on('participant-joined', (participant: Participant) => {
-      console.log('👤 New participant joined:', participant);
-      addTranscript('System', `${participant.name} joined the meeting`);
-      toast({ 
-        title: 'Participant Joined', 
-        description: `${participant.name} joined the meeting` 
-      });
-    });
-
-    socket.on('participant-left', ({ socketId, name }) => {
-      console.log('👋 Participant left:', name);
-      removeParticipant(socketId);
-      addTranscript('System', `${name} left the meeting`);
-      toast({ 
-        title: 'Participant Left', 
-        description: `${name} left the meeting` 
-      });
-    });
-
-    socket.on('room-not-found', () => {
-      toast({ 
-        title: 'Room Not Found', 
-        description: 'The meeting room does not exist', 
-        variant: 'destructive' 
-      });
-      setIsConnecting(false);
-    });
-
-    socket.on('room-full', ({ maxParticipants }) => {
-      toast({ 
-        title: 'Room Full', 
-        description: `Maximum ${maxParticipants} participants allowed`, 
-        variant: 'destructive' 
-      });
-      setIsConnecting(false);
-    });
-
-    const peer = new Peer({
-      config: {
-        iceServers: [
-          { urls: 'stun:stun.l.google.com:19302' },
-          { urls: 'stun:stun1.l.google.com:19302' }
-        ]
-      }
-    });
-
-    peer.on('open', (id) => {
-      console.log('✅ My Peer ID:', id);
-      setMyPeerId(id);
-      myPeerIdRef.current = id;
-      peerRef.current = peer;
-    });
-
-    peer.on('call', async (incomingCall) => {
-      console.log('📞 Receiving call from:', incomingCall.peer);
-      
-      if (incomingCall.peer === myPeerIdRef.current) {
-        console.log('❌ Ignoring call from self');
-        return;
-      }
-
-      const stream = localStreamRef.current;
-      if (!stream) {
-        console.error('❌ No local stream available');
-        return;
-      }
-      
-      incomingCall.answer(stream);
-      
-      incomingCall.on('stream', (remoteStream) => {
-        console.log('✅ Stream received from:', incomingCall.peer);
-        updateParticipantStream(incomingCall.peer, remoteStream, incomingCall);
-      });
-      
-      incomingCall.on('close', () => {
-        console.log('📴 Call closed from:', incomingCall.peer);
-      });
-
-      incomingCall.on('error', (err) => {
-        console.error('❌ Call error:', err);
-      });
-    });
-
-    peer.on('error', (err) => {
-      console.error('❌ Peer error:', err);
-      setIsConnecting(false);
-    });
-
-    return () => {
-      socket.disconnect();
-      if (peer && !peer.destroyed) {
-        peer.destroy();
-      }
-    };
-  }, []);
-
-  useEffect(() => {
-    if (localVideoRef.current && localStream) {
-      localVideoRef.current.srcObject = localStream;
-      localVideoRef.current.play().catch(console.error);
-    }
-  }, [localStream]);
-
-  function callParticipant(participant: Participant) {
-    const stream = localStreamRef.current;
-    const peer = peerRef.current;
-
-    if (!peer || !stream) {
-      console.error('❌ Cannot call: missing peer or stream');
+    if (!userName.trim() || !roomName.trim()) {
+      setError('Please enter both name and room name');
       return;
     }
 
-    console.log('📞 Calling:', participant.name, participant.peerId);
-
-    const call = peer.call(participant.peerId, stream, {
-      metadata: { name: userName, socketId: mySocketIdRef.current }
-    });
-
-    if (!call) {
-      console.error('❌ Failed to initiate call');
-      return;
-    }
-
-    call.on('stream', (remoteStream) => {
-      console.log('✅ Stream received from:', participant.name);
-      setParticipants(prev => {
-        const newMap = new Map(prev);
-        newMap.set(participant.socketId, {
-          ...participant,
-          stream: remoteStream,
-          call
-        });
-        return newMap;
-      });
-    });
-
-    call.on('close', () => {
-      removeParticipant(participant.socketId);
-    });
-
-    call.on('error', (err) => {
-      console.error('❌ Call error:', err);
-    });
-
-    setParticipants(prev => {
-      const newMap = new Map(prev);
-      newMap.set(participant.socketId, {
-        ...participant,
-        call
-      });
-      return newMap;
-    });
-  }
-
-  function updateParticipantStream(peerId: string, stream: MediaStream, call: MediaConnection) {
-    setParticipants(prev => {
-      const newMap = new Map(prev);
-      for (const [key, value] of newMap.entries()) {
-        if (value.peerId === peerId) {
-          newMap.set(key, { ...value, stream, call });
-          break;
-        }
-      }
-      return newMap;
-    });
-  }
-
-  function removeParticipant(socketId: string) {
-    setParticipants(prev => {
-      const newMap = new Map(prev);
-      const participant = newMap.get(socketId);
-      if (participant?.call) {
-        participant.call.close();
-      }
-      newMap.delete(socketId);
-      return newMap;
-    });
-  }
-
-  async function startMeeting() {
-    if (!peerRef.current || !socketRef.current) {
-      toast({ title: 'Not Ready', description: 'Please wait...', variant: 'destructive' });
-      return;
-    }
-
-    if (!userName.trim()) {
-      toast({ title: 'Name Required', description: 'Please enter your name', variant: 'destructive' });
-      return;
-    }
-
-    setIsConnecting(true);
+    setIsLoading(true);
+    setError('');
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: { ideal: 1280 }, height: { ideal: 720 } },
-        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+      // Call backend to get LiveKit token
+      const response = await fetch('http://localhost:3001/api/token', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          roomName: roomName.trim(),
+          participantName: userName.trim(),
+        }),
       });
-      
-      setLocalStream(stream);
-      localStreamRef.current = stream;
-      setIsInMeeting(true);
-      setIsConnecting(false);
-      startSpeechRecognition();
 
-      if (roomIdInput.trim()) {
-        setIsHost(false);
-        setRoomId(roomIdInput.trim());
-        socketRef.current.emit('join-room', {
-          roomId: roomIdInput.trim(),
-          name: userName,
-          peerId: myPeerId
-        });
-        addTranscript('You', 'Joined the meeting');
-      } else {
-        setIsHost(true);
-        const newRoomId = generateRoomId();
-        setRoomId(newRoomId);
-        socketRef.current.emit('create-room', {
-          roomId: newRoomId,
-          name: userName,
-          peerId: myPeerId
-        });
-        addTranscript('You', 'Meeting started');
-        toast({ title: 'Meeting Started', description: 'Share your link to invite others' });
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Failed to get access token');
       }
-    } catch (err) {
-      console.error('Error:', err);
-      setIsConnecting(false);
-      toast({ title: 'Access Denied', description: 'Please allow camera and microphone', variant: 'destructive' });
-    }
-  }
 
-  function generateRoomId() {
-    return `room-${Math.random().toString(36).substring(2, 12)}`;
-  }
-
-  function leaveMeeting() {
-    if (recognitionRef.current) {
-      try { recognitionRef.current.stop(); } catch (e) {}
-      recognitionRef.current = null;
+      const data = await response.json();
+      setToken(data.token);
+      setIsJoined(true);
+      setError('');
+    } catch (err: any) {
+      console.error('Error joining room:', err);
+      setError(err.message || 'Failed to join room. Please try again.');
+    } finally {
+      setIsLoading(false);
     }
+  };
+
+  const handleLeaveRoom = () => {
+    setIsJoined(false);
+    setToken('');
+    setError('');
+    navigate('/live-meeting');
+  };
+
+  const handleBackToHome = () => {
+    navigate('/');
+  };
+
+  const handleError = (error: Error) => {
+    console.error('LiveKit error:', error);
     
-    participants.forEach((participant) => {
-      try {
-        participant.call?.close();
-      } catch (e) {}
-    });
-    setParticipants(new Map());
-    
-    if (localStream) {
-      localStream.getTracks().forEach(track => track.stop());
-      setLocalStream(null);
+    if (error.message.includes('Permission') || error.message.includes('NotAllowedError')) {
+      setError('Camera/microphone permission denied. Please allow access and refresh the page.');
+    } else if (error.message.includes('NotFoundError')) {
+      setError('No camera or microphone found. Please connect a device and refresh.');
+    } else {
+      setError(`Connection error: ${error.message}`);
     }
+  };
 
-    if (socketRef.current && roomId) {
-      socketRef.current.emit('leave-room', { roomId });
-    }
-    
-    setIsInMeeting(false);
-    setTranscript([]);
-    setIsListening(false);
-    setRoomIdInput('');
-    setRoomId('');
-    
-    toast({ title: 'Meeting Ended', description: 'You left the meeting' });
-  }
-
-  function startSpeechRecognition() {
-    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SpeechRecognition) return;
-
-    const recognition = new SpeechRecognition();
-    recognition.continuous = true;
-    recognition.interimResults = false;
-    recognition.lang = 'en-US';
-
-    recognition.onresult = (event: any) => {
-      const text = event.results[event.results.length - 1][0].transcript;
-      addTranscript('You', text);
-    };
-
-    recognition.onerror = (event: any) => {
-      if (event.error !== 'no-speech') {
-        console.error('Speech error:', event.error);
-      }
-    };
-
-    recognition.onend = () => {
-      if (isInMeeting && recognitionRef.current) {
-        setTimeout(() => { try { recognition.start(); } catch (e) {} }, 100);
-      }
-    };
-
-    try {
-      recognition.start();
-      setIsListening(true);
-      recognitionRef.current = recognition;
-    } catch (e) {}
-  }
-
-  function addTranscript(speaker: string, text: string) {
-    setTranscript(prev => [...prev, {
-      id: `${Date.now()}-${Math.random()}`,
-      speaker,
-      text,
-      timestamp: new Date()
-    }]);
-  }
-
-  function toggleVideo() {
-    if (localStream) {
-      const track = localStream.getVideoTracks()[0];
-      if (track) {
-        track.enabled = !track.enabled;
-        setIsVideoOn(track.enabled);
-      }
-    }
-  }
-
-  function toggleAudio() {
-    if (localStream) {
-      const track = localStream.getAudioTracks()[0];
-      if (track) {
-        track.enabled = !track.enabled;
-        setIsAudioOn(track.enabled);
-      }
-    }
-  }
-
-  function shareLink() {
-    const link = `${window.location.origin}/live-meeting?room=${roomId}`;
-    navigator.clipboard.writeText(link);
-    toast({ title: 'Link Copied!', description: 'Share this link with others' });
-  }
-
-  function copyRoomId() {
-    navigator.clipboard.writeText(roomId);
-    toast({ title: 'Copied!', description: 'Meeting ID copied' });
-  }
-
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const room = params.get('room');
-    if (room && !isInMeeting && myPeerId) {
-      setRoomIdInput(room);
-      toast({ title: 'Meeting Link Detected', description: 'Enter your name and join' });
-    }
-  }, [myPeerId, isInMeeting]);
-
-  if (!isInMeeting) {
+  // Show join screen if not joined
+  if (!isJoined || !token) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-background to-muted/30 p-6">
-        <div className="max-w-2xl mx-auto mt-20">
-          <Card className="border-2 shadow-xl">
-            <CardHeader className="text-center">
-              <div className="flex justify-center mb-4">
-                <div className="h-16 w-16 rounded-full bg-primary/10 flex items-center justify-center">
-                  <Video className="h-8 w-8 text-primary" />
-                </div>
-              </div>
-              <CardTitle className="text-3xl">Live Video Meeting</CardTitle>
-              <p className="text-muted-foreground mt-2">Video call with live transcription</p>
-            </CardHeader>
-            <CardContent className="space-y-6">
-              <div className="space-y-3">
-                <p className="text-sm font-medium">Your Name *</p>
-                <Input
-                  placeholder="Enter your name"
-                  value={userName}
-                  onChange={(e) => setUserName(e.target.value)}
-                />
-              </div>
+      <main className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-900 via-purple-900 to-indigo-900 p-4">
+        <div className="bg-white/10 backdrop-blur-lg rounded-2xl shadow-2xl p-8 md:p-12 w-full max-w-md border border-white/20">
+          <div className="text-center mb-8">
+            <h1 className="text-4xl font-bold text-white mb-2">LiveKit Meeting</h1>
+            <p className="text-gray-300">Join or create a video meeting room</p>
+          </div>
 
-              <div className="space-y-2">
-                <p className="text-sm font-medium">Meeting ID (Optional)</p>
-                <Input
-                  placeholder="Enter meeting ID to join (leave empty for new)"
-                  value={roomIdInput}
-                  onChange={(e) => setRoomIdInput(e.target.value)}
-                />
-              </div>
+          <div className="space-y-6">
+            {/* Participant Name Input */}
+            <div>
+              <label htmlFor="userName" className="block text-sm font-medium text-gray-200 mb-2">
+                Your Name
+              </label>
+              <input
+                id="userName"
+                type="text"
+                value={userName}
+                onChange={(e) => setUserName(e.target.value)}
+                placeholder="Enter your name"
+                className="w-full px-4 py-3 bg-white/10 border border-white/20 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                disabled={isLoading}
+                autoFocus
+                onKeyPress={(e) => {
+                  if (e.key === 'Enter' && userName && roomName) {
+                    handleJoinRoom(null);
+                  }
+                }}
+              />
+            </div>
 
-              <Button
-                className="w-full h-12"
-                onClick={startMeeting}
-                disabled={isConnecting || !myPeerId || !userName.trim()}
+            {/* Room Name Input */}
+            <div>
+              <label htmlFor="roomName" className="block text-sm font-medium text-gray-200 mb-2">
+                Room Name
+              </label>
+              <input
+                id="roomName"
+                type="text"
+                value={roomName}
+                onChange={(e) => setRoomName(e.target.value)}
+                placeholder="Enter room name"
+                className="w-full px-4 py-3 bg-white/10 border border-white/20 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                disabled={isLoading}
+                onKeyPress={(e) => {
+                  if (e.key === 'Enter' && userName && roomName) {
+                    handleJoinRoom(null);
+                  }
+                }}
+              />
+            </div>
+
+            {/* Error Message */}
+            {error && (
+              <div className="bg-red-500/20 border border-red-500 text-red-200 px-4 py-3 rounded-lg text-sm">
+                {error}
+              </div>
+            )}
+
+            {/* Action Buttons */}
+            <div className="space-y-3">
+              <button
+                onClick={() => handleJoinRoom(null)}
+                disabled={isLoading}
+                className="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 px-6 rounded-lg transition-colors duration-200 shadow-lg hover:shadow-xl disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                {isConnecting ? 'Starting...' : roomIdInput ? 'Join Meeting' : 'Start New Meeting'}
-              </Button>
+                {isLoading ? (
+                  <span className="flex items-center justify-center">
+                    <svg
+                      className="animate-spin -ml-1 mr-3 h-5 w-5 text-white"
+                      xmlns="http://www.w3.org/2000/svg"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                    >
+                      <circle
+                        className="opacity-25"
+                        cx="12"
+                        cy="12"
+                        r="10"
+                        stroke="currentColor"
+                        strokeWidth="4"
+                      ></circle>
+                      <path
+                        className="opacity-75"
+                        fill="currentColor"
+                        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                      ></path>
+                    </svg>
+                    Joining...
+                  </span>
+                ) : (
+                  'Join Room'
+                )}
+              </button>
+              <button
+                onClick={() => handleJoinRoom(null)}
+                disabled={isLoading}
+                className="w-full bg-purple-600 hover:bg-purple-700 text-white font-semibold py-3 px-6 rounded-lg transition-colors duration-200 shadow-lg hover:shadow-xl disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {isLoading ? 'Creating...' : 'Create Room'}
+              </button>
+            </div>
 
-              <div className="text-center text-sm text-muted-foreground">
-                <p>✓ HD Video & Audio • ✓ Live Transcription • ✓ Up to 10 Participants</p>
-              </div>
-            </CardContent>
-          </Card>
+            <div className="text-center text-sm text-gray-400 mt-6">
+              <p>Powered by LiveKit SFU</p>
+              <p className="mt-1">Supports 5-10 participants</p>
+            </div>
+          </div>
         </div>
-      </div>
+      </main>
     );
   }
 
-  const participantCount = participants.size + 1;
-  const participantsArray = Array.from(participants.values());
+  // Show LiveKit meeting room
+  const livekitUrl = import.meta.env.VITE_LIVEKIT_URL || 'wss://miniproject-r3p8k1py.livekit.cloud';
 
   return (
-    <div className="min-h-screen bg-background flex flex-col">
-      <div className="border-b bg-card px-6 py-3 flex items-center justify-between">
-        <div className="flex items-center gap-4">
-          <Video className="h-5 w-5 text-primary" />
-          <span className="font-semibold">Live Meeting</span>
-          <div className="flex items-center gap-2 text-sm">
-            <Users className="h-4 w-4" />
-            <span>{participantCount} / 10</span>
-          </div>
-          <div className="flex items-center gap-2 text-sm">
-            <div className="h-2 w-2 rounded-full bg-green-500 animate-pulse" />
-            <span className="text-green-600">Live</span>
-          </div>
-        </div>
-        
-        <div className="flex items-center gap-2">
-          <div className="bg-muted px-3 py-1.5 rounded-md flex items-center gap-2">
-            <span className="text-xs">Room:</span>
-            <code className="text-xs font-mono">{roomId.substring(0, 12)}...</code>
-            <Button size="sm" variant="ghost" onClick={copyRoomId} className="h-6 w-6 p-0">
-              <Copy className="h-3 w-3" />
-            </Button>
-          </div>
-          <Button size="sm" variant="outline" onClick={shareLink}>
-            <Share2 className="h-4 w-4 mr-2" />
-            Share
-          </Button>
-        </div>
-      </div>
-
-      <div className="flex-1 flex gap-4 p-4">
-        <div className="flex-1 flex flex-col gap-4">
-          <div className="flex-1 grid gap-4" style={{
-            gridTemplateColumns: participantsArray.length <= 1 ? 'repeat(2, 1fr)' : 'repeat(3, 1fr)',
-            gridTemplateRows: participantsArray.length <= 3 ? '1fr' : 'repeat(2, 1fr)'
-          }}>
-            <div className="bg-muted rounded-lg overflow-hidden relative">
-              {localStream && (
-                <video ref={localVideoRef} autoPlay playsInline muted className="w-full h-full object-cover" />
-              )}
-              {!isVideoOn && (
-                <div className="absolute inset-0 bg-muted flex items-center justify-center">
-                  <VideoOff className="h-12 w-12 text-muted-foreground" />
-                </div>
-              )}
-              <div className="absolute bottom-3 left-3 bg-black/70 px-3 py-1 rounded-full">
-                <span className="text-white text-sm">{userName} (You)</span>
-              </div>
-              {!isAudioOn && (
-                <div className="absolute top-3 right-3 bg-red-500 p-2 rounded-full">
-                  <MicOff className="h-4 w-4 text-white" />
-                </div>
-              )}
-              {isHost && (
-                <div className="absolute top-3 left-3 bg-primary px-2 py-1 rounded-md">
-                  <span className="text-white text-xs">Host</span>
-                </div>
-              )}
-            </div>
-
-            {participantsArray.map((participant) => (
-              <RemoteVideo key={participant.socketId} participant={participant} />
-            ))}
-
-            {participantsArray.length === 0 && (
-              <div className="bg-muted rounded-lg flex items-center justify-center">
-                <div className="text-center">
-                  <Users className="h-16 w-16 mx-auto mb-4 text-muted-foreground" />
-                  <p className="text-muted-foreground">Waiting for others...</p>
-                </div>
-              </div>
-            )}
-          </div>
-
-          <div className="flex items-center justify-center gap-3">
-            <Button size="lg" variant={isAudioOn ? 'default' : 'destructive'} onClick={toggleAudio} className="rounded-full h-14 w-14">
-              {isAudioOn ? <Mic className="h-5 w-5" /> : <MicOff className="h-5 w-5" />}
-            </Button>
-            <Button size="lg" variant={isVideoOn ? 'default' : 'destructive'} onClick={toggleVideo} className="rounded-full h-14 w-14">
-              {isVideoOn ? <Video className="h-5 w-5" /> : <VideoOff className="h-5 w-5" />}
-            </Button>
-            <Button size="lg" variant="destructive" onClick={leaveMeeting} className="rounded-full h-14 px-6">
-              <PhoneOff className="h-5 w-5 mr-2" />
-              Leave
-            </Button>
-          </div>
-        </div>
-
-        <div className="w-96 bg-card border rounded-lg flex flex-col">
-          <div className="p-4 border-b">
-            <h3 className="font-semibold flex items-center gap-2">
-              <Users className="h-4 w-4" />
-              Participants ({participantCount})
-            </h3>
-            <div className="space-y-2 mt-3 max-h-40 overflow-y-auto">
-              <div className="flex items-center gap-2 bg-primary/10 px-3 py-2 rounded-md">
-                <div className="h-2 w-2 rounded-full bg-green-500" />
-                <span className="text-sm">{userName} (You{isHost ? ' - Host' : ''})</span>
-              </div>
-              {participantsArray.map((p) => (
-                <div key={p.socketId} className="flex items-center gap-2 bg-blue-500/10 px-3 py-2 rounded-md">
-                  <div className="h-2 w-2 rounded-full bg-blue-500" />
-                  <span className="text-sm">{p.name}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-          
-          <div className="p-4 border-b">
-            <h3 className="font-semibold flex items-center gap-2">
-              <div className={cn("h-2 w-2 rounded-full", isListening ? "bg-green-500 animate-pulse" : "bg-gray-400")} />
-              Live Transcript
-            </h3>
-          </div>
-          
-          <div className="flex-1 overflow-y-auto p-4 space-y-3">
-            {transcript.length === 0 ? (
-              <div className="text-center text-muted-foreground text-sm py-8">
-                <p>Transcript will appear here</p>
-              </div>
-            ) : (
-              transcript.map((item) => (
-                <div key={item.id} className="space-y-1">
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-medium text-primary">{item.speaker}</span>
-                    <span className="text-xs text-muted-foreground">{item.timestamp.toLocaleTimeString()}</span>
-                  </div>
-                  <p className="text-sm">{item.text}</p>
-                </div>
-              ))
-            )}
-          </div>
-        </div>
-      </div>
+    <div className="min-h-screen bg-gray-900">
+      <LiveKitRoom
+        video={true}
+        audio={true}
+        token={token}
+        serverUrl={livekitUrl}
+        connect={true}
+        onDisconnected={handleLeaveRoom}
+        onError={handleError}
+        style={{ height: '100vh' }}
+        data-lk-theme="default"
+      >
+        <RoomWithTranscript onDisconnect={handleLeaveRoom} />
+      </LiveKitRoom>
     </div>
   );
 }
 
-function RemoteVideo({ participant }: { participant: Participant }) {
-  const videoRef = useRef<HTMLVideoElement>(null);
+// Inner component that has access to room context
+function RoomWithTranscript({ onDisconnect }: { onDisconnect: () => void }) {
+  const room = useRoomContext();
+  const [showTranscript, setShowTranscript] = useState(true);
 
-  useEffect(() => {
-    if (videoRef.current && participant.stream) {
-      videoRef.current.srcObject = participant.stream;
-      videoRef.current.play().catch(console.error);
-    }
-  }, [participant.stream]);
+  // Use transcription hook
+  const { transcripts, isTranscribing, error } = useTranscription({
+    room,
+    enabled: true
+  });
 
   return (
-    <div className="bg-muted rounded-lg overflow-hidden relative">
-      {participant.stream ? (
-        <video ref={videoRef} autoPlay playsInline className="w-full h-full object-cover" />
-      ) : (
-        <div className="w-full h-full flex items-center justify-center">
-          <Users className="h-12 w-12 text-muted-foreground" />
+    <div className="flex h-screen relative">
+      {/* Main video conference area */}
+      <div className="flex-1 relative">
+        <VideoConference />
+        <RoomAudioRenderer />
+        
+        {/* Top Control Bar */}
+        <div className="absolute top-0 left-0 right-0 z-50 bg-gradient-to-b from-black/60 to-transparent p-4">
+          <div className="flex items-center justify-between">
+            {/* Left side - Leave Button */}
+            <button
+              onClick={onDisconnect}
+              className="bg-red-600 hover:bg-red-700 text-white font-semibold py-2.5 px-5 rounded-full shadow-lg transition-all flex items-center gap-2 hover:scale-105"
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+              </svg>
+              Leave
+            </button>
+
+            {/* Center - Room Info */}
+            <div className="flex items-center gap-3 bg-black/40 backdrop-blur-sm px-4 py-2 rounded-full">
+              <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
+              <span className="text-white text-sm font-medium">Live Meeting</span>
+            </div>
+
+            {/* Right side - Transcript Toggle */}
+            <button
+              onClick={() => setShowTranscript(!showTranscript)}
+              className={`${
+                showTranscript ? 'bg-blue-600 hover:bg-blue-700' : 'bg-gray-700 hover:bg-gray-600'
+              } text-white font-semibold py-2.5 px-5 rounded-full shadow-lg transition-all flex items-center gap-2 hover:scale-105`}
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+              </svg>
+              Transcript
+            </button>
+          </div>
         </div>
-      )}
-      <div className="absolute bottom-3 left-3 bg-black/70 px-3 py-1 rounded-full">
-        <span className="text-white text-sm">{participant.name}</span>
       </div>
+
+      {/* Collapsible Transcript Sidebar */}
+      <div
+        className={`${
+          showTranscript ? 'w-96' : 'w-0'
+        } transition-all duration-300 ease-in-out overflow-hidden flex-shrink-0 border-l border-gray-800`}
+      >
+        <div className="w-96 h-full">
+          <TranscriptPanel
+            transcripts={transcripts}
+            isTranscribing={isTranscribing}
+            error={error}
+          />
+        </div>
+      </div>
+
+      {/* Floating Toggle Button (for when sidebar is closed) */}
+      {!showTranscript && (
+        <button
+          onClick={() => setShowTranscript(true)}
+          className="fixed right-4 top-1/2 -translate-y-1/2 z-50 bg-blue-600 hover:bg-blue-700 text-white p-3 rounded-l-xl shadow-2xl transition-all hover:scale-110 animate-pulse"
+          title="Show Transcript"
+        >
+          <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+          </svg>
+        </button>
+      )}
     </div>
   );
 }

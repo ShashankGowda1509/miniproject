@@ -6,7 +6,8 @@ import { useSpeechRecognition } from '@/hooks/useSpeechRecognition';
 import { useSpeechSynthesis } from '@/hooks/useSpeechSynthesis';
 import { parseResume, generateResumeQuestions, getDemoResume, ParsedResume, ResumeQuestion } from '@/services/resumeService';
 import { generateFeedback } from '@/services/aiInterviewService';
-import TranscriptPanel, { TranscriptItem } from '@/components/TranscriptPanel';
+import InterviewTranscriptPanel from '@/components/InterviewTranscriptPanel';
+import type { TranscriptItem } from '@/components/InterviewTranscriptPanel';
 import VoiceWave from '@/components/VoiceWave';
 import { Upload, FileText, Play, Mic, MicOff, Square, RotateCcw, Volume2, CheckCircle } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -410,7 +411,7 @@ export default function ResumeInterview() {
 
       {/* Transcript Sidebar */}
       <div className="lg:w-80 xl:w-96">
-        <TranscriptPanel items={transcript} className="h-[calc(100vh-12rem)]" />
+        <InterviewTranscriptPanel items={transcript} className="h-[calc(100vh-12rem)]" />
       </div>
     </div>
   );

@@ -11,7 +11,8 @@ import {
   InterviewQuestion,
   InterviewType 
 } from '@/services/aiInterviewService';
-import TranscriptPanel, { TranscriptItem } from '@/components/TranscriptPanel';
+import InterviewTranscriptPanel from '@/components/InterviewTranscriptPanel';
+import type { TranscriptItem } from '@/components/InterviewTranscriptPanel';
 import VoiceWave from '@/components/VoiceWave';
 import { Mic, MicOff, Play, Square, RotateCcw, Lightbulb, MessageSquare, Volume2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -390,7 +391,7 @@ export default function AIInterview() {
 
       {/* Transcript Sidebar */}
       <div className="lg:w-80 xl:w-96">
-        <TranscriptPanel items={transcript} className="h-[calc(100vh-12rem)]" />
+        <InterviewTranscriptPanel items={transcript} className="h-[calc(100vh-12rem)]" />
       </div>
     </div>
   );

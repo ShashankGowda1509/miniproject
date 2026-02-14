@@ -1,0 +1,26 @@
+# Render deployment configuration for Whisper Transcription Server
+
+services:
+  # Python Whisper Server
+  - type: web
+    name: whisper-transcription-server
+    env: python
+    region: oregon
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: python whisper_server.py
+    envVars:
+      - key: WHISPER_MODEL
+        value: medium
+      - key: WHISPER_DEVICE
+        value: cpu
+      - key: WHISPER_COMPUTE_TYPE
+        value: int8
+      - key: WHISPER_WORKERS
+        value: 4
+      - key: PORT
+        value: 8765
+      - key: MODEL_CACHE_DIR
+        value: /opt/render/project/src/models
+    healthCheckPath: /
+    autoDeploy: true

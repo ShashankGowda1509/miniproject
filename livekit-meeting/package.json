@@ -8,6 +8,7 @@
     "start": "next start",
     "lint": "next lint",
     "server": "tsx watch backend/server.ts",
+    "transcription": "tsx watch backend/transcription-bridge.ts",
     "start:prod": "node start-prod.js"
   },
   "dependencies": {
@@ -21,7 +22,11 @@
     "livekit-server-sdk": "^2.6.1",
     "next": "14.2.13",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "socket.io": "^4.7.5",
+    "socket.io-client": "^4.7.5",
+    "uuid": "^10.0.0",
+    "ws": "^8.18.0"
   },
   "devDependencies": {
     "@types/cors": "^2.8.17",
@@ -29,6 +34,8 @@
     "@types/node": "^20",
     "@types/react": "^18",
     "@types/react-dom": "^18",
+    "@types/uuid": "^10.0.0",
+    "@types/ws": "^8.5.12",
     "autoprefixer": "^10.4.20",
     "eslint": "^8",
     "eslint-config-next": "14.2.13",

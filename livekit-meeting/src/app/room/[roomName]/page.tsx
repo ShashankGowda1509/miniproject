@@ -6,9 +6,12 @@ import {
   LiveKitRoom,
   VideoConference,
   RoomAudioRenderer,
+  useRoomContext,
 } from '@livekit/components-react';
 import '@livekit/components-styles/index.css';
 import { Room } from 'livekit-client';
+import { useTranscription } from '@/hooks/useTranscription';
+import { TranscriptPanel } from '@/components/TranscriptPanel';
 
 interface RoomPageProps {
   params: {
@@ -148,22 +151,74 @@ export default function RoomPage({ params }: RoomPageProps) {
         style={{ height: '100vh' }}
         data-lk-theme="default"
       >
-        {/* VideoConference provides a complete UI with video grid and controls */}
+        <RoomWithTranscript onDisconnect={handleDisconnect} />
+      </LiveKitRoom>
+    </div>
+  );
+}
+
+// Inner component that has access to room context
+function RoomWithTranscript({ onDisconnect }: { onDisconnect: () => void }) {
+  const room = useRoomContext();
+  const [showTranscript, setShowTranscript] = useState(true);
+
+  // Use transcription hook
+  const { transcripts, isTranscribing, error } = useTranscription({
+    room,
+    enabled: true
+  });
+
+  return (
+    <div className="flex h-screen">
+      {/* Main video conference area */}
+      <div className="flex-1 relative">
         <VideoConference />
-        
-        {/* RoomAudioRenderer ensures audio works */}
         <RoomAudioRenderer />
         
         {/* Custom Leave Button */}
         <div className="absolute top-4 left-4 z-50">
           <button
-            onClick={handleDisconnect}
+            onClick={onDisconnect}
             className="bg-red-600 hover:bg-red-700 text-white font-semibold py-2 px-6 rounded-lg shadow-lg transition-colors"
           >
             Leave Room
           </button>
         </div>
-      </LiveKitRoom>
+
+        {/* Toggle Transcript Button */}
+        <div className="absolute top-4 right-4 z-50">
+          <button
+            onClick={() => setShowTranscript(!showTranscript)}
+            className="bg-gray-800 hover:bg-gray-700 text-white font-semibold py-2 px-4 rounded-lg shadow-lg transition-colors flex items-center gap-2"
+          >
+            <svg
+              className="w-5 h-5"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z"
+              />
+            </svg>
+            {showTranscript ? 'Hide' : 'Show'} Transcript
+          </button>
+        </div>
+      </div>
+
+      {/* Transcript Panel */}
+      {showTranscript && (
+        <div className="w-96 flex-shrink-0">
+          <TranscriptPanel
+            transcripts={transcripts}
+            isTranscribing={isTranscribing}
+            error={error}
+          />
+        </div>
+      )}
     </div>
   );
 }
