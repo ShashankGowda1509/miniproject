@@ -37,6 +37,9 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
   const navigate = useNavigate();
   const [sidebarOpen, setSidebarOpen] = useState(true);
 
+  // Check if current page is LiveMeeting (needs different overflow handling)
+  const isLiveMeetingPage = location.pathname.includes('/live-meeting');
+
   const handleLogout = () => {
     logout();
     navigate('/login');
@@ -56,7 +59,7 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
   }, []);
 
   return (
-    <div className="min-h-screen bg-background flex relative">
+    <div className="h-screen bg-background flex overflow-hidden">
       {/* Sidebar */}
       <aside className={cn(
         "fixed inset-y-0 left-0 z-50 bg-sidebar text-sidebar-foreground transition-all duration-300 ease-in-out shadow-2xl",
@@ -139,10 +142,10 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
 
       {/* Main Content */}
       <div className={cn(
-        "flex-1 flex flex-col transition-all duration-300",
+        "flex-1 flex flex-col transition-all duration-300 h-full overflow-hidden",
         sidebarOpen ? "ml-64" : "ml-0"
       )}>
-        <header className="sticky top-0 z-40 border-b border-border px-4 lg:px-8 py-4 flex items-center gap-4 backdrop-blur-sm bg-card/95">
+        <header className="sticky top-0 z-40 border-b border-border px-4 lg:px-8 py-4 flex items-center gap-4 backdrop-blur-sm bg-card/95 flex-shrink-0">
           <button 
             className="p-2 hover:bg-muted rounded-lg transition-all duration-200 hover:scale-110 group"
             onClick={() => setSidebarOpen(!sidebarOpen)}
@@ -167,7 +170,10 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
         </header>
 
         {/* Page Content */}
-        <main className="flex-1 p-4 lg:p-8 overflow-auto">
+        <main className={cn(
+          "flex-1",
+          isLiveMeetingPage ? "overflow-hidden" : "p-4 lg:p-8 overflow-auto"
+        )}>
           {children}
         </main>
       </div>

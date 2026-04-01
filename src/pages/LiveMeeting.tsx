@@ -216,7 +216,7 @@ export default function LiveMeeting() {
   const livekitUrl = import.meta.env.VITE_LIVEKIT_URL || 'wss://miniproject-r3p8k1py.livekit.cloud';
 
   return (
-    <div className="min-h-screen bg-gray-900">
+    <div className="fixed inset-0 bg-gray-900 overflow-hidden z-10">
       <LiveKitRoom
         video={true}
         audio={true}
@@ -225,7 +225,7 @@ export default function LiveMeeting() {
         connect={true}
         onDisconnected={handleLeaveRoom}
         onError={handleError}
-        style={{ height: '100vh' }}
+        style={{ height: '100%', width: '100%', overflow: 'hidden' }}
         data-lk-theme="default"
       >
         <RoomWithTranscript onDisconnect={handleLeaveRoom} />
@@ -239,18 +239,33 @@ function RoomWithTranscript({ onDisconnect }: { onDisconnect: () => void }) {
   const room = useRoomContext();
   const [showTranscript, setShowTranscript] = useState(true);
 
-  // Use transcription hook
-  const { transcripts, isTranscribing, error } = useTranscription({
+  // Check for Web Speech API support
+  const speechRecognitionSupported = 
+    !!(window as any).SpeechRecognition || !!(window as any).webkitSpeechRecognition;
+
+  // Use transcription hook (now uses Web Speech API)
+  const { transcripts, isTranscribing, error, startTranscription, stopTranscription } = useTranscription({
     room,
     enabled: true
   });
 
   return (
-    <div className="flex h-screen relative">
+    <div className="flex h-full w-full overflow-hidden">
       {/* Main video conference area */}
-      <div className="flex-1 relative">
-        <VideoConference />
+      <div className="flex-1 h-full overflow-hidden">
+        <div className="h-full w-full overflow-hidden">
+          <VideoConference />
+        </div>
         <RoomAudioRenderer />
+        
+        {/* Browser Compatibility Notice */}
+        {!speechRecognitionSupported && (
+          <div className="absolute top-20 left-1/2 transform -translate-x-1/2 z-40 bg-yellow-500/90 backdrop-blur-sm px-4 py-2 rounded-lg shadow-lg border border-yellow-600">
+            <p className="text-sm text-black font-medium">
+              ⚠️ Live transcription requires Chrome or Edge browser
+            </p>
+          </div>
+        )}
         
         {/* Top Control Bar */}
         <div className="absolute top-0 left-0 right-0 z-50 bg-gradient-to-b from-black/60 to-transparent p-4">
@@ -292,15 +307,19 @@ function RoomWithTranscript({ onDisconnect }: { onDisconnect: () => void }) {
       <div
         className={`${
           showTranscript ? 'w-96' : 'w-0'
-        } transition-all duration-300 ease-in-out overflow-hidden flex-shrink-0 border-l border-gray-800`}
+        } transition-all duration-300 ease-in-out overflow-hidden flex-shrink-0 border-l border-gray-800 h-full`}
       >
-        <div className="w-96 h-full">
-          <TranscriptPanel
-            transcripts={transcripts}
-            isTranscribing={isTranscribing}
-            error={error}
-          />
-        </div>
+        {showTranscript && (
+          <div className="w-96 h-full overflow-hidden">
+            <TranscriptPanel
+              transcripts={transcripts}
+              isTranscribing={isTranscribing}
+              error={error}
+              onStartTranscription={startTranscription}
+              onStopTranscription={stopTranscription}
+            />
+          </div>
+        )}
       </div>
 
       {/* Floating Toggle Button (for when sidebar is closed) */}

@@ -13,13 +13,17 @@ interface TranscriptPanelProps {
   isTranscribing: boolean;
   error: string | null;
   className?: string;
+  onStartTranscription?: () => void;
+  onStopTranscription?: () => void;
 }
 
 export function TranscriptPanel({
   transcripts,
   isTranscribing,
   error,
-  className = ''
+  className = '',
+  onStartTranscription,
+  onStopTranscription
 }: TranscriptPanelProps) {
   const transcriptEndRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -74,7 +78,7 @@ export function TranscriptPanel({
   };
 
   return (
-    <div className={`flex flex-col h-full bg-gradient-to-br from-gray-900 via-gray-900 to-gray-800 ${className}`}>
+    <div className={`flex flex-col h-full bg-gradient-to-br from-gray-900 via-gray-900 to-gray-800 overflow-hidden ${className}`}>
       {/* Header */}
       <div className="flex items-center justify-between px-5 py-4 bg-gradient-to-r from-blue-600/20 to-purple-600/20 backdrop-blur-sm border-b border-white/10">
         <div className="flex items-center gap-3">
@@ -95,17 +99,40 @@ export function TranscriptPanel({
           </div>
           <div>
             <h3 className="text-sm font-bold text-white">Live Transcript</h3>
-            <p className="text-xs text-gray-400">Real-time captions</p>
+            <p className="text-xs text-gray-400">
+              {isTranscribing ? 'Listening...' : 'Ready to start'}
+            </p>
           </div>
         </div>
 
-        {/* Status Indicator */}
+        {/* Status Indicator and Controls */}
         <div className="flex items-center gap-2">
+          {!isTranscribing && onStartTranscription && !error && (
+            <button
+              onClick={onStartTranscription}
+              className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 px-3 py-1 rounded-full border border-blue-500/30 transition-colors"
+              title="Start transcription"
+            >
+              <div className="w-2 h-2 bg-white rounded-full" />
+              <span className="text-xs text-white font-medium">Start</span>
+            </button>
+          )}
           {isTranscribing && (
-            <div className="flex items-center gap-2 bg-green-500/20 px-3 py-1 rounded-full border border-green-500/30">
-              <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
-              <span className="text-xs text-green-400 font-medium">Live</span>
-            </div>
+            <>
+              <div className="flex items-center gap-2 bg-green-500/20 px-3 py-1 rounded-full border border-green-500/30">
+                <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
+                <span className="text-xs text-green-400 font-medium">Live</span>
+              </div>
+              {onStopTranscription && (
+                <button
+                  onClick={onStopTranscription}
+                  className="text-xs text-red-400 hover:text-red-300 px-2 py-1 rounded transition-colors"
+                  title="Stop transcription"
+                >
+                  Stop
+                </button>
+              )}
+            </>
           )}
           {error && (
             <div className="flex items-center gap-2 bg-red-500/20 px-3 py-1 rounded-full border border-red-500/30">
@@ -126,7 +153,7 @@ export function TranscriptPanel({
           <div className="flex flex-col items-center justify-center h-full text-center px-4">
             <div className="bg-gradient-to-br from-blue-500/20 to-purple-500/20 p-6 rounded-2xl backdrop-blur-sm border border-white/10 mb-4">
               <svg
-                className="w-16 h-16 text-blue-400 mx-auto"
+                className={`w-16 h-16 text-blue-400 mx-auto ${isTranscribing ? 'animate-pulse' : ''}`}
                 fill="none"
                 stroke="currentColor"
                 viewBox="0 0 24 24"
@@ -140,12 +167,14 @@ export function TranscriptPanel({
               </svg>
             </div>
             <h4 className="text-base font-semibold text-white mb-2">
-              {isTranscribing ? 'Listening...' : 'Ready to Transcribe'}
+              {isTranscribing ? '🎤 Listening for your voice...' : '🎙️ Ready to transcribe'}
             </h4>
             <p className="text-sm text-gray-400 max-w-xs">
               {isTranscribing
-                ? 'Start speaking and your words will appear here in real-time'
-                : 'Enable your microphone to see live transcriptions'}
+                ? 'Start speaking and your words will appear here in real-time! Make sure your microphone is working.'
+                : !onStartTranscription 
+                  ? 'Transcription will start automatically when you join the room'
+                  : 'Click "Start" button above to begin transcription'}
             </p>
           </div>
         )}
@@ -168,6 +197,11 @@ export function TranscriptPanel({
             <div className="flex-1">
               <p className="text-sm font-semibold text-red-400">Transcription Error</p>
               <p className="text-xs text-red-300 mt-1 opacity-90">{error}</p>
+              {error.includes('not supported') && (
+                <p className="text-xs text-yellow-300 mt-2 opacity-90">
+                  💡 Tip: Web Speech API works best on Chrome or Edge browsers
+                </p>
+              )}
             </div>
           </div>
         )}
